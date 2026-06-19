@@ -2,10 +2,9 @@ import http from 'node:http';
 import https from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || '127.0.0.1';
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
 const PUBLIC_DIR = join(ROOT, 'public');
 const MAX_LINKS = 100;
@@ -38,11 +37,12 @@ export const server = http.createServer(async (req, res) => {
   }
 });
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  server.listen(PORT, HOST, () => {
-    console.log(`SEDscraper running: http://${HOST}:${PORT}`);
-  });
-}
+// Vercel captures server.listen() to route requests into this HTTP server.
+server.listen(PORT, () => {
+  if (!process.env.VERCEL) {
+    console.log(`SEDscraper running: http://localhost:${PORT}`);
+  }
+});
 
 async function handleScrape(req, res) {
   const body = await readRequestBody(req);
