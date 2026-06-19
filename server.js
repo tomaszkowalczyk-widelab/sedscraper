@@ -37,6 +37,8 @@ export const server = http.createServer(async (req, res) => {
   }
 });
 
+export default server;
+
 // Vercel captures server.listen() to route requests into this HTTP server.
 server.listen(PORT, () => {
   if (!process.env.VERCEL) {
