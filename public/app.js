@@ -147,20 +147,21 @@ export function createWordPressWxr(results) {
   const posts = results.filter((result) => result.ok);
   const declaredTags = createWordPressTagDeclarations(posts);
   const declaredCategories = createWordPressCategoryDeclarations(posts);
-  const attachmentStartId = posts.length + 1;
+  const attachmentPlan = createWordPressAttachmentPlan(posts);
   const items = posts
     .map((result, index) => {
       const title = result.title || '';
       const slug = getPostSlug(result.url);
       const content = result.postContent || result.articleContent || '';
+      const blockContent = convertHtmlToWordPressBlocks(content, result.url);
       const postDate = formatWordPressDate(result.publishedDate || result.date, result.url, result.publishedDateGmt);
       const pubDate = postDate.rss || now;
       const tags = createWordPressTagEntries(result.tags || []);
       const categories = createWordPressCategoryEntries(result.categories || []);
       const postId = index + 1;
-      const attachmentId = result.featuredImage?.src ? attachmentStartId + index : '';
-      const thumbnailMeta = attachmentId
-        ? createWordPressPostMeta('_thumbnail_id', String(attachmentId))
+      const featuredAttachment = attachmentPlan.byPostId.get(postId)?.find((attachment) => attachment.isFeatured);
+      const thumbnailMeta = featuredAttachment
+        ? createWordPressPostMeta('_thumbnail_id', String(featuredAttachment.id))
         : '';
 
       return [
@@ -173,7 +174,7 @@ export function createWordPressWxr(results) {
         `      <description></description>`,
         categories,
         tags,
-        `      <content:encoded><![CDATA[${escapeCdata(content)}]]></content:encoded>`,
+        `      <content:encoded><![CDATA[${escapeCdata(blockContent)}]]></content:encoded>`,
         `      <excerpt:encoded><![CDATA[]]></excerpt:encoded>`,
         `      <wp:post_id>${postId}</wp:post_id>`,
         `      <wp:post_date><![CDATA[${postDate.date}]]></wp:post_date>`,
@@ -194,9 +195,8 @@ export function createWordPressWxr(results) {
       ].filter(Boolean).join('\n');
     })
     .join('\n');
-  const attachments = posts
-    .map((result, index) => createWordPressAttachmentItem(result, attachmentStartId + index, index + 1, now))
-    .filter(Boolean)
+  const attachments = attachmentPlan.attachments
+    .map((attachment) => createWordPressAttachmentItem(attachment, now))
     .join('\n');
 
   return [
@@ -676,6 +676,14 @@ function escapeXml(value) {
     .replace(/'/g, '&apos;');
 }
 
+function escapeHtmlAttribute(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function escapeCdata(value) {
   return String(value || '').replace(/]]>/g, ']]]]><![CDATA[>');
 }
@@ -750,13 +758,208 @@ function createWordPressCategoryEntries(categories) {
     .join('\n');
 }
 
-function createWordPressAttachmentItem(result, attachmentId, postId, fallbackDate) {
-  const imageUrl = result.featuredImage?.src || '';
+function createWordPressAttachmentPlan(posts) {
+  const attachments = [];
+  const byPostId = new Map();
+  let nextAttachmentId = posts.length + 1;
+
+  posts.forEach((post, index) => {
+    const postId = index + 1;
+    const postAttachments = [];
+    const seenUrls = new Set();
+
+    getPostExportImages(post).forEach((image) => {
+      if (!image.url || seenUrls.has(image.url)) return;
+
+      seenUrls.add(image.url);
+
+      const attachment = {
+        ...image,
+        id: nextAttachmentId,
+        postId,
+        post,
+        title: image.alt || post.title || getImageFilename(image.url)
+      };
+
+      nextAttachmentId += 1;
+      attachments.push(attachment);
+      postAttachments.push(attachment);
+    });
+
+    byPostId.set(postId, postAttachments);
+  });
+
+  return { attachments, byPostId };
+}
+
+function getPostExportImages(result) {
+  const images = [];
+
+  if (result.featuredImage?.src) {
+    images.push({
+      url: result.featuredImage.src,
+      alt: result.featuredImage.alt || '',
+      isFeatured: true
+    });
+  }
+
+  extractImagesFromHtml(result.postContent || result.articleContent || '', result.url).forEach((image) => {
+    images.push({ ...image, isFeatured: false });
+  });
+
+  return images;
+}
+
+function extractImagesFromHtml(html, baseUrl = '') {
+  const images = [];
+  const imagePattern = /<img\b[^>]*>/gi;
+  let match;
+
+  while ((match = imagePattern.exec(html || '')) !== null) {
+    const tag = match[0];
+    const rawSrc = extractHtmlAttribute(tag, 'src')
+      || extractHtmlAttribute(tag, 'data-src')
+      || extractFirstSrcsetUrl(extractHtmlAttribute(tag, 'srcset'))
+      || extractFirstSrcsetUrl(extractHtmlAttribute(tag, 'data-srcset'));
+    const url = resolveExportUrl(rawSrc, baseUrl);
+    if (!url) continue;
+
+    images.push({
+      url,
+      alt: extractHtmlAttribute(tag, 'alt')
+    });
+  }
+
+  return images;
+}
+
+function convertHtmlToWordPressBlocks(html, baseUrl = '') {
+  const blocks = [];
+  const elementPattern = /<(p|h[1-6]|ul|ol|blockquote|figure)\b[^>]*>[\s\S]*?<\/\1>/gi;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = elementPattern.exec(html || '')) !== null) {
+    const looseHtml = String(html || '').slice(lastIndex, match.index).trim();
+    if (looseHtml) blocks.push(convertLooseHtmlToBlock(looseHtml, baseUrl));
+
+    blocks.push(convertElementHtmlToBlock(match[0], match[1].toLowerCase(), baseUrl));
+    lastIndex = elementPattern.lastIndex;
+  }
+
+  const trailingHtml = String(html || '').slice(lastIndex).trim();
+  if (trailingHtml) blocks.push(convertLooseHtmlToBlock(trailingHtml, baseUrl));
+
+  return blocks.filter(Boolean).join('\n\n');
+}
+
+function convertElementHtmlToBlock(elementHtml, tagName, baseUrl = '') {
+  if (tagName === 'p') {
+    const imageBlock = convertImageOnlyHtmlToBlock(elementHtml, baseUrl);
+    if (imageBlock) return imageBlock;
+
+    return [
+      '<!-- wp:paragraph -->',
+      elementHtml,
+      '<!-- /wp:paragraph -->'
+    ].join('\n');
+  }
+
+  if (/^h[1-6]$/.test(tagName)) {
+    const level = Number(tagName.slice(1));
+    const attrs = level === 2 ? '' : ` {"level":${level}}`;
+
+    return [
+      `<!-- wp:heading${attrs} -->`,
+      elementHtml,
+      '<!-- /wp:heading -->'
+    ].join('\n');
+  }
+
+  if (tagName === 'ul' || tagName === 'ol') {
+    const attrs = tagName === 'ol' ? ' {"ordered":true}' : '';
+
+    return [
+      `<!-- wp:list${attrs} -->`,
+      elementHtml,
+      '<!-- /wp:list -->'
+    ].join('\n');
+  }
+
+  if (tagName === 'blockquote') {
+    return [
+      '<!-- wp:quote -->',
+      elementHtml,
+      '<!-- /wp:quote -->'
+    ].join('\n');
+  }
+
+  if (tagName === 'figure') {
+    const imageBlock = convertImageOnlyHtmlToBlock(elementHtml, baseUrl);
+    if (imageBlock) return imageBlock;
+
+    return [
+      '<!-- wp:html -->',
+      elementHtml,
+      '<!-- /wp:html -->'
+    ].join('\n');
+  }
+
+  return convertLooseHtmlToBlock(elementHtml, baseUrl);
+}
+
+function convertLooseHtmlToBlock(html, baseUrl = '') {
+  const imageBlock = convertImageOnlyHtmlToBlock(html, baseUrl);
+  if (imageBlock) return imageBlock;
+
+  return [
+    '<!-- wp:html -->',
+    html,
+    '<!-- /wp:html -->'
+  ].join('\n');
+}
+
+function convertImageOnlyHtmlToBlock(html, baseUrl = '') {
+  const imgTag = String(html || '').match(/<img\b[^>]*>/i)?.[0] || '';
+  if (!imgTag) return '';
+
+  const textWithoutImage = cleanHtmlForImageBlockCheck(String(html || '').replace(imgTag, ''));
+  if (textWithoutImage) return '';
+
+  const rawSrc = extractHtmlAttribute(imgTag, 'src')
+    || extractHtmlAttribute(imgTag, 'data-src')
+    || extractFirstSrcsetUrl(extractHtmlAttribute(imgTag, 'srcset'))
+    || extractFirstSrcsetUrl(extractHtmlAttribute(imgTag, 'data-srcset'));
+  const src = resolveExportUrl(rawSrc, baseUrl);
+  if (!src) return '';
+
+  const alt = extractHtmlAttribute(imgTag, 'alt');
+
+  return [
+    '<!-- wp:image {"sizeSlug":"large"} -->',
+    `<figure class="wp-block-image size-large"><img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}"/></figure>`,
+    '<!-- /wp:image -->'
+  ].join('\n');
+}
+
+function cleanHtmlForImageBlockCheck(html) {
+  return String(html || '')
+    .replace(/<a\b[^>]*>|<\/a>/gi, '')
+    .replace(/<figure\b[^>]*>|<\/figure>/gi, '')
+    .replace(/<p\b[^>]*>|<\/p>/gi, '')
+    .replace(/<br\s*\/?>/gi, '')
+    .replace(/&nbsp;/gi, '')
+    .replace(/\s+/g, '')
+    .trim();
+}
+
+function createWordPressAttachmentItem(attachment, fallbackDate) {
+  const imageUrl = attachment.url || '';
   if (!imageUrl) return '';
 
-  const postDate = formatWordPressDate(result.publishedDate || result.date, result.url, result.publishedDateGmt);
+  const postDate = formatWordPressDate(attachment.post.publishedDate || attachment.post.date, attachment.post.url, attachment.post.publishedDateGmt);
   const pubDate = postDate.rss || fallbackDate;
-  const imageTitle = result.featuredImage?.alt || result.title || getImageFilename(imageUrl);
+  const imageTitle = attachment.title || getImageFilename(imageUrl);
   const imageSlug = slugifyTerm(getImageFilename(imageUrl).replace(/\.[a-z0-9]+$/i, '') || imageTitle);
 
   return [
@@ -769,7 +972,7 @@ function createWordPressAttachmentItem(result, attachmentId, postId, fallbackDat
     `      <description></description>`,
     `      <content:encoded><![CDATA[]]></content:encoded>`,
     `      <excerpt:encoded><![CDATA[]]></excerpt:encoded>`,
-    `      <wp:post_id>${attachmentId}</wp:post_id>`,
+    `      <wp:post_id>${attachment.id}</wp:post_id>`,
     `      <wp:post_date><![CDATA[${postDate.date}]]></wp:post_date>`,
     `      <wp:post_date_gmt><![CDATA[${postDate.dateGmt}]]></wp:post_date_gmt>`,
     `      <wp:post_modified><![CDATA[${postDate.date}]]></wp:post_modified>`,
@@ -778,7 +981,7 @@ function createWordPressAttachmentItem(result, attachmentId, postId, fallbackDat
     `      <wp:ping_status><![CDATA[closed]]></wp:ping_status>`,
     `      <wp:post_name><![CDATA[${escapeCdata(imageSlug)}]]></wp:post_name>`,
     `      <wp:status><![CDATA[inherit]]></wp:status>`,
-    `      <wp:post_parent>${postId}</wp:post_parent>`,
+    `      <wp:post_parent>${attachment.postId}</wp:post_parent>`,
     `      <wp:menu_order>0</wp:menu_order>`,
     `      <wp:post_type><![CDATA[attachment]]></wp:post_type>`,
     `      <wp:post_password><![CDATA[]]></wp:post_password>`,
@@ -812,6 +1015,39 @@ function getImageFilename(value) {
     return decodeURIComponent(filename);
   } catch {
     return 'featured-image';
+  }
+}
+
+function extractHtmlAttribute(tagHtml, attributeName) {
+  const pattern = new RegExp(`\\b${attributeName}\\s*=\\s*(["'])(.*?)\\1`, 'i');
+  const match = String(tagHtml || '').match(pattern);
+  return match ? decodeHtmlEntities(match[2]).trim() : '';
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([a-f0-9]+);/gi, (_, code) => String.fromCharCode(Number.parseInt(code, 16)))
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#039;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function extractFirstSrcsetUrl(srcset) {
+  return String(srcset || '').split(',')[0]?.trim().split(/\s+/)[0] || '';
+}
+
+function resolveExportUrl(value, baseUrl = '') {
+  const url = String(value || '').trim();
+  if (!url || url.startsWith('data:') || url.startsWith('blob:')) return '';
+
+  try {
+    return new URL(url, baseUrl).toString();
+  } catch {
+    return url;
   }
 }
 
