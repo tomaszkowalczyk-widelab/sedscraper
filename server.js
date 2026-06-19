@@ -240,10 +240,11 @@ async function fetchWordPressTaxonomies(html, pageUrl) {
       fetchWordPressTerms(restRoot, 'tags', tagIds).catch(() => []),
       fetchWordPressTerms(restRoot, 'categories', categoryIds).catch(() => [])
     ]);
+    const categoriesWithParents = await hydrateCategoryParents(restRoot, categories);
 
     return {
       tags: uniqueTerms(tags.length ? tags : extractHtmlTagTerms(html, pageUrl)),
-      categories: uniqueTerms(categories.length ? categories : extractHtmlCategoryTerms(html, pageUrl)),
+      categories: uniqueTerms(categoriesWithParents.length ? categoriesWithParents : extractHtmlCategoryTerms(html, pageUrl)),
       publishedDate: normalizeWordPressRestDate(post?.date),
       publishedDateGmt: normalizeWordPressRestDate(post?.date_gmt)
     };
@@ -263,6 +264,38 @@ function normalizeTermIds(value) {
   return value
     .map((id) => Number(id))
     .filter(Number.isFinite);
+}
+
+async function hydrateCategoryParents(restRoot, categories) {
+  const byId = new Map(categories.filter((category) => category.id).map((category) => [category.id, category]));
+  let missingParentIds = categories
+    .map((category) => category.parent)
+    .filter((parentId) => parentId && !byId.has(parentId));
+
+  while (missingParentIds.length) {
+    const parentTerms = await fetchWordPressTerms(restRoot, 'categories', missingParentIds).catch(() => []);
+    if (!parentTerms.length) break;
+
+    parentTerms.forEach((term) => {
+      if (term.id) byId.set(term.id, term);
+    });
+
+    missingParentIds = parentTerms
+      .map((category) => category.parent)
+      .filter((parentId) => parentId && !byId.has(parentId));
+  }
+
+  return categories.map((category) => {
+    const parent = byId.get(category.parent);
+
+    return parent
+      ? {
+          ...category,
+          parentSlug: parent.slug,
+          parentName: parent.name
+        }
+      : category;
+  });
 }
 
 function normalizeWordPressRestDate(value) {
@@ -499,7 +532,9 @@ async function fetchWordPressTerms(restRoot, taxonomyEndpoint, termIds) {
   const url = new URL(`wp/v2/${taxonomyEndpoint}`, restRoot);
   url.searchParams.set('include', uniqueIds.join(','));
   url.searchParams.set('per_page', '100');
-  url.searchParams.set('_fields', 'id,name,slug,link');
+  url.searchParams.set('_fields', taxonomyEndpoint === 'categories'
+    ? 'id,name,slug,link,parent'
+    : 'id,name,slug,link');
 
   const terms = await fetchJson(url.toString());
 
@@ -518,7 +553,8 @@ function normalizeWordPressTerm(term) {
     id: term.id,
     name,
     slug: String(term.slug || '').trim(),
-    link: String(term.link || '').trim()
+    link: String(term.link || '').trim(),
+    parent: Number(term.parent) || 0
   };
 }
 

@@ -153,13 +153,14 @@ export function createWordPressWxr(results) {
       const title = result.title || '';
       const slug = getPostSlug(result.url);
       const content = result.postContent || result.articleContent || '';
-      const blockContent = convertHtmlToWordPressBlocks(content, result.url);
       const postDate = formatWordPressDate(result.publishedDate || result.date, result.url, result.publishedDateGmt);
       const pubDate = postDate.rss || now;
       const tags = createWordPressTagEntries(result.tags || []);
       const categories = createWordPressCategoryEntries(result.categories || []);
       const postId = index + 1;
-      const featuredAttachment = attachmentPlan.byPostId.get(postId)?.find((attachment) => attachment.isFeatured);
+      const postAttachments = attachmentPlan.byPostId.get(postId) || [];
+      const blockContent = convertHtmlToWordPressBlocks(content, result.url, postAttachments);
+      const featuredAttachment = postAttachments.find((attachment) => attachment.isFeatured);
       const thumbnailMeta = featuredAttachment
         ? createWordPressPostMeta('_thumbnail_id', String(featuredAttachment.id))
         : '';
@@ -227,8 +228,8 @@ export function createWordPressWxr(results) {
     '    </wp:author>',
     declaredCategories,
     declaredTags,
-    items,
     attachments,
+    items,
     '  </channel>',
     '</rss>'
   ].filter(Boolean).join('\n');
@@ -725,6 +726,7 @@ function createWordPressCategoryDeclarations(results) {
         '    <wp:category>',
         `      <wp:term_id>${declarations.length + 1}</wp:term_id>`,
         `      <wp:category_nicename><![CDATA[${escapeCdata(term.slug)}]]></wp:category_nicename>`,
+        `      <wp:category_parent><![CDATA[${escapeCdata(term.parentSlug || '')}]]></wp:category_parent>`,
         `      <wp:cat_name><![CDATA[${escapeCdata(term.name)}]]></wp:cat_name>`,
         '    </wp:category>'
       ].join('\n'));
@@ -778,7 +780,25 @@ function createWordPressAttachmentPlan(posts) {
         id: nextAttachmentId,
         postId,
         post,
-        title: image.alt || post.title || getImageFilename(image.url)
+        title: image.alt || (image.isFeatured ? post.title : '') || getImageFilename(image.url)
+      };
+
+      nextAttachmentId += 1;
+      attachments.push(attachment);
+      postAttachments.push(attachment);
+    });
+
+    getPostExportFiles(post).forEach((file) => {
+      if (!file.url || seenUrls.has(file.url)) return;
+
+      seenUrls.add(file.url);
+
+      const attachment = {
+        ...file,
+        id: nextAttachmentId,
+        postId,
+        post,
+        title: file.title || getExportFilename(file.url)
       };
 
       nextAttachmentId += 1;
@@ -796,8 +816,10 @@ function getPostExportImages(result) {
   const images = [];
 
   if (result.featuredImage?.src) {
+    const url = normalizeExportImageUrl(result.featuredImage.src);
+
     images.push({
-      url: result.featuredImage.src,
+      url,
       alt: result.featuredImage.alt || '',
       isFeatured: true
     });
@@ -808,6 +830,23 @@ function getPostExportImages(result) {
   });
 
   return images;
+}
+
+function getPostExportFiles(result) {
+  const files = [];
+  const transcriptUrl = normalizeExportFileUrl(result.transcriptLink || '');
+
+  if (transcriptUrl) {
+    files.push({
+      url: transcriptUrl,
+      title: getExportFilename(transcriptUrl),
+      isFeatured: false,
+      isImage: false,
+      isTranscript: true
+    });
+  }
+
+  return files;
 }
 
 function extractImagesFromHtml(html, baseUrl = '') {
@@ -821,7 +860,7 @@ function extractImagesFromHtml(html, baseUrl = '') {
       || extractHtmlAttribute(tag, 'data-src')
       || extractFirstSrcsetUrl(extractHtmlAttribute(tag, 'srcset'))
       || extractFirstSrcsetUrl(extractHtmlAttribute(tag, 'data-srcset'));
-    const url = resolveExportUrl(rawSrc, baseUrl);
+    const url = normalizeExportImageUrl(resolveExportUrl(rawSrc, baseUrl));
     if (!url) continue;
 
     images.push({
@@ -833,7 +872,7 @@ function extractImagesFromHtml(html, baseUrl = '') {
   return images;
 }
 
-function convertHtmlToWordPressBlocks(html, baseUrl = '') {
+function convertHtmlToWordPressBlocks(html, baseUrl = '', attachments = []) {
   const blocks = [];
   const elementPattern = /<(p|h[1-6]|ul|ol|blockquote|figure)\b[^>]*>[\s\S]*?<\/\1>/gi;
   let lastIndex = 0;
@@ -841,26 +880,26 @@ function convertHtmlToWordPressBlocks(html, baseUrl = '') {
 
   while ((match = elementPattern.exec(html || '')) !== null) {
     const looseHtml = String(html || '').slice(lastIndex, match.index).trim();
-    if (looseHtml) blocks.push(convertLooseHtmlToBlock(looseHtml, baseUrl));
+    if (looseHtml) blocks.push(convertLooseHtmlToBlock(looseHtml, baseUrl, attachments));
 
-    blocks.push(convertElementHtmlToBlock(match[0], match[1].toLowerCase(), baseUrl));
+    blocks.push(convertElementHtmlToBlock(match[0], match[1].toLowerCase(), baseUrl, attachments));
     lastIndex = elementPattern.lastIndex;
   }
 
   const trailingHtml = String(html || '').slice(lastIndex).trim();
-  if (trailingHtml) blocks.push(convertLooseHtmlToBlock(trailingHtml, baseUrl));
+  if (trailingHtml) blocks.push(convertLooseHtmlToBlock(trailingHtml, baseUrl, attachments));
 
   return blocks.filter(Boolean).join('\n\n');
 }
 
-function convertElementHtmlToBlock(elementHtml, tagName, baseUrl = '') {
+function convertElementHtmlToBlock(elementHtml, tagName, baseUrl = '', attachments = []) {
   if (tagName === 'p') {
-    const imageBlock = convertImageOnlyHtmlToBlock(elementHtml, baseUrl);
+    const imageBlock = convertImageOnlyHtmlToBlock(elementHtml, baseUrl, attachments);
     if (imageBlock) return imageBlock;
 
     return [
       '<!-- wp:paragraph -->',
-      elementHtml,
+      normalizeImagesInHtml(elementHtml, baseUrl, attachments),
       '<!-- /wp:paragraph -->'
     ].join('\n');
   }
@@ -871,7 +910,7 @@ function convertElementHtmlToBlock(elementHtml, tagName, baseUrl = '') {
 
     return [
       `<!-- wp:heading${attrs} -->`,
-      elementHtml,
+      normalizeImagesInHtml(elementHtml, baseUrl, attachments),
       '<!-- /wp:heading -->'
     ].join('\n');
   }
@@ -881,7 +920,7 @@ function convertElementHtmlToBlock(elementHtml, tagName, baseUrl = '') {
 
     return [
       `<!-- wp:list${attrs} -->`,
-      elementHtml,
+      normalizeImagesInHtml(elementHtml, baseUrl, attachments),
       '<!-- /wp:list -->'
     ].join('\n');
   }
@@ -889,37 +928,37 @@ function convertElementHtmlToBlock(elementHtml, tagName, baseUrl = '') {
   if (tagName === 'blockquote') {
     return [
       '<!-- wp:quote -->',
-      elementHtml,
+      normalizeImagesInHtml(elementHtml, baseUrl, attachments),
       '<!-- /wp:quote -->'
     ].join('\n');
   }
 
   if (tagName === 'figure') {
-    const imageBlock = convertImageOnlyHtmlToBlock(elementHtml, baseUrl);
+    const imageBlock = convertImageOnlyHtmlToBlock(elementHtml, baseUrl, attachments);
     if (imageBlock) return imageBlock;
 
     return [
       '<!-- wp:html -->',
-      elementHtml,
+      normalizeImagesInHtml(elementHtml, baseUrl, attachments),
       '<!-- /wp:html -->'
     ].join('\n');
   }
 
-  return convertLooseHtmlToBlock(elementHtml, baseUrl);
+  return convertLooseHtmlToBlock(elementHtml, baseUrl, attachments);
 }
 
-function convertLooseHtmlToBlock(html, baseUrl = '') {
-  const imageBlock = convertImageOnlyHtmlToBlock(html, baseUrl);
+function convertLooseHtmlToBlock(html, baseUrl = '', attachments = []) {
+  const imageBlock = convertImageOnlyHtmlToBlock(html, baseUrl, attachments);
   if (imageBlock) return imageBlock;
 
   return [
     '<!-- wp:html -->',
-    html,
+    normalizeImagesInHtml(html, baseUrl, attachments),
     '<!-- /wp:html -->'
   ].join('\n');
 }
 
-function convertImageOnlyHtmlToBlock(html, baseUrl = '') {
+function convertImageOnlyHtmlToBlock(html, baseUrl = '', attachments = []) {
   const imgTag = String(html || '').match(/<img\b[^>]*>/i)?.[0] || '';
   if (!imgTag) return '';
 
@@ -930,16 +969,58 @@ function convertImageOnlyHtmlToBlock(html, baseUrl = '') {
     || extractHtmlAttribute(imgTag, 'data-src')
     || extractFirstSrcsetUrl(extractHtmlAttribute(imgTag, 'srcset'))
     || extractFirstSrcsetUrl(extractHtmlAttribute(imgTag, 'data-srcset'));
-  const src = resolveExportUrl(rawSrc, baseUrl);
+  const src = normalizeExportImageUrl(resolveExportUrl(rawSrc, baseUrl));
   if (!src) return '';
 
   const alt = extractHtmlAttribute(imgTag, 'alt');
+  const attachment = findAttachmentByUrl(attachments, src);
+  const attrs = attachment
+    ? ` {"id":${attachment.id},"sizeSlug":"large","linkDestination":"none"}`
+    : ' {"sizeSlug":"large","linkDestination":"none"}';
+  const imageClass = attachment
+    ? `wp-image-${attachment.id}`
+    : '';
 
   return [
-    '<!-- wp:image {"sizeSlug":"large"} -->',
-    `<figure class="wp-block-image size-large"><img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}"/></figure>`,
+    `<!-- wp:image${attrs} -->`,
+    `<figure class="wp-block-image size-large"><img src="${escapeHtmlAttribute(src)}" alt="${escapeHtmlAttribute(alt)}"${imageClass ? ` class="${imageClass}"` : ''}/></figure>`,
     '<!-- /wp:image -->'
   ].join('\n');
+}
+
+function normalizeImagesInHtml(html, baseUrl = '', attachments = []) {
+  return String(html || '').replace(/<img\b[^>]*>/gi, (imgTag) => {
+    const rawSrc = extractHtmlAttribute(imgTag, 'src')
+      || extractHtmlAttribute(imgTag, 'data-src')
+      || extractFirstSrcsetUrl(extractHtmlAttribute(imgTag, 'srcset'))
+      || extractFirstSrcsetUrl(extractHtmlAttribute(imgTag, 'data-srcset'));
+    const src = normalizeExportImageUrl(resolveExportUrl(rawSrc, baseUrl));
+    if (!src) return imgTag;
+
+    const attachment = findAttachmentByUrl(attachments, src);
+    const normalized = setHtmlAttribute(imgTag, 'src', src);
+    const withoutLazySources = removeHtmlAttributes(normalized, [
+      'srcset',
+      'data-src',
+      'data-srcset',
+      'sizes',
+      'loading'
+    ]);
+    const classValue = [
+      extractHtmlAttribute(withoutLazySources, 'class'),
+      attachment ? `wp-image-${attachment.id}` : ''
+    ].filter(Boolean).join(' ');
+
+    return classValue
+      ? setHtmlAttribute(withoutLazySources, 'class', classValue)
+      : withoutLazySources;
+  });
+}
+
+function findAttachmentByUrl(attachments, url) {
+  return attachments.find((attachment) => !attachment.isFeatured && attachment.url === url)
+    || attachments.find((attachment) => attachment.url === url)
+    || null;
 }
 
 function cleanHtmlForImageBlockCheck(html) {
@@ -954,21 +1035,25 @@ function cleanHtmlForImageBlockCheck(html) {
 }
 
 function createWordPressAttachmentItem(attachment, fallbackDate) {
-  const imageUrl = attachment.url || '';
-  if (!imageUrl) return '';
+  const fileUrl = attachment.url || '';
+  if (!fileUrl) return '';
 
-  const postDate = formatWordPressDate(attachment.post.publishedDate || attachment.post.date, attachment.post.url, attachment.post.publishedDateGmt);
+  const fileDate = parseDateFromUploadUrl(fileUrl);
+  const postDate = fileDate
+    ? formatWordPressDateFromDate(fileDate)
+    : formatWordPressDate(attachment.post.publishedDate || attachment.post.date, attachment.post.url, attachment.post.publishedDateGmt);
   const pubDate = postDate.rss || fallbackDate;
-  const imageTitle = attachment.title || getImageFilename(imageUrl);
-  const imageSlug = slugifyTerm(getImageFilename(imageUrl).replace(/\.[a-z0-9]+$/i, '') || imageTitle);
+  const attachmentTitle = attachment.title || getExportFilename(fileUrl);
+  const attachmentSlug = slugifyTerm(getExportFilename(fileUrl).replace(/\.[a-z0-9]+$/i, '') || attachmentTitle);
+  const postParent = attachment.isFeatured ? attachment.postId : 0;
 
   return [
     '    <item>',
-    `      <title>${escapeXml(imageTitle)}</title>`,
-    `      <link>${escapeXml(imageUrl)}</link>`,
+    `      <title>${escapeXml(attachmentTitle)}</title>`,
+    `      <link>${escapeXml(fileUrl)}</link>`,
     `      <pubDate>${escapeXml(pubDate)}</pubDate>`,
     `      <dc:creator><![CDATA[admin]]></dc:creator>`,
-    `      <guid isPermaLink="false">${escapeXml(imageUrl)}</guid>`,
+    `      <guid isPermaLink="false">${escapeXml(fileUrl)}</guid>`,
     `      <description></description>`,
     `      <content:encoded><![CDATA[]]></content:encoded>`,
     `      <excerpt:encoded><![CDATA[]]></excerpt:encoded>`,
@@ -979,17 +1064,19 @@ function createWordPressAttachmentItem(attachment, fallbackDate) {
     `      <wp:post_modified_gmt><![CDATA[${postDate.dateGmt}]]></wp:post_modified_gmt>`,
     `      <wp:comment_status><![CDATA[closed]]></wp:comment_status>`,
     `      <wp:ping_status><![CDATA[closed]]></wp:ping_status>`,
-    `      <wp:post_name><![CDATA[${escapeCdata(imageSlug)}]]></wp:post_name>`,
+    `      <wp:post_name><![CDATA[${escapeCdata(attachmentSlug)}]]></wp:post_name>`,
     `      <wp:status><![CDATA[inherit]]></wp:status>`,
-    `      <wp:post_parent>${attachment.postId}</wp:post_parent>`,
+    `      <wp:post_parent>${postParent}</wp:post_parent>`,
     `      <wp:menu_order>0</wp:menu_order>`,
     `      <wp:post_type><![CDATA[attachment]]></wp:post_type>`,
+    `      <wp:post_mime_type><![CDATA[${escapeCdata(getAttachmentMimeType(fileUrl))}]]></wp:post_mime_type>`,
     `      <wp:post_password><![CDATA[]]></wp:post_password>`,
     `      <wp:is_sticky>0</wp:is_sticky>`,
-    `      <wp:attachment_url>${escapeXml(imageUrl)}</wp:attachment_url>`,
-    createWordPressPostMeta('_wp_attached_file', imageUrl),
+    `      <wp:attachment_url>${escapeXml(fileUrl)}</wp:attachment_url>`,
+    createWordPressPostMeta('_wp_attached_file', getWordPressAttachedFilePath(fileUrl)),
+    attachment.alt ? createWordPressPostMeta('_wp_attachment_image_alt', attachment.alt) : '',
     '    </item>'
-  ].join('\n');
+  ].filter(Boolean).join('\n');
 }
 
 function createWordPressPostMeta(key, value) {
@@ -1004,8 +1091,9 @@ function createWordPressPostMeta(key, value) {
 function normalizeWordPressExportTerm(term) {
   const name = String(term?.name || term?.slug || term || '').trim();
   const slug = String(term?.slug || slugifyTerm(name)).trim();
+  const parentSlug = String(term?.parentSlug || '').trim();
 
-  return { name, slug };
+  return { name, slug, parentSlug };
 }
 
 function getImageFilename(value) {
@@ -1022,6 +1110,24 @@ function extractHtmlAttribute(tagHtml, attributeName) {
   const pattern = new RegExp(`\\b${attributeName}\\s*=\\s*(["'])(.*?)\\1`, 'i');
   const match = String(tagHtml || '').match(pattern);
   return match ? decodeHtmlEntities(match[2]).trim() : '';
+}
+
+function setHtmlAttribute(tagHtml, attributeName, value) {
+  const safeValue = escapeHtmlAttribute(value);
+  const pattern = new RegExp(`\\b${attributeName}\\s*=\\s*(["'])(.*?)\\1`, 'i');
+
+  if (pattern.test(tagHtml)) {
+    return tagHtml.replace(pattern, `${attributeName}="${safeValue}"`);
+  }
+
+  return tagHtml.replace(/\/?>\s*$/, (ending) => ` ${attributeName}="${safeValue}"${ending}`);
+}
+
+function removeHtmlAttributes(tagHtml, attributeNames) {
+  return attributeNames.reduce((html, attributeName) => {
+    const pattern = new RegExp(`\\s+${attributeName}\\s*=\\s*(["'])(.*?)\\1`, 'gi');
+    return html.replace(pattern, '');
+  }, tagHtml);
 }
 
 function decodeHtmlEntities(value) {
@@ -1051,6 +1157,50 @@ function resolveExportUrl(value, baseUrl = '') {
   }
 }
 
+function normalizeExportImageUrl(value) {
+  try {
+    const url = new URL(value);
+
+    if (url.hostname === 'i0.wp.com' || url.hostname === 'i1.wp.com' || url.hostname === 'i2.wp.com') {
+      const pathParts = url.pathname.split('/').filter(Boolean);
+      const originalHost = pathParts.shift();
+
+      if (originalHost) {
+        return `https://${originalHost}/${pathParts.join('/')}`;
+      }
+    }
+
+    url.search = '';
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return String(value || '').trim();
+  }
+}
+
+function normalizeExportFileUrl(value) {
+  const url = String(value || '').trim();
+  if (!url || url.startsWith('data:') || url.startsWith('blob:')) return '';
+
+  try {
+    const parsedUrl = new URL(url);
+    parsedUrl.hash = '';
+    return parsedUrl.toString();
+  } catch {
+    return url;
+  }
+}
+
+function getWordPressAttachedFilePath(value) {
+  try {
+    const { pathname } = new URL(value);
+    const match = pathname.match(/\/wp-content\/uploads\/(.+)$/);
+    return decodeURIComponent(match?.[1] || pathname.split('/').filter(Boolean).at(-1) || 'image');
+  } catch {
+    return getImageFilename(value);
+  }
+}
+
 function formatWordPressDate(value, fallbackUrl = '', gmtValue = '') {
   const date = parseScrapedDate(value) || parseDateFromUrl(fallbackUrl);
   if (!date) return { date: '', dateGmt: '', rss: '' };
@@ -1060,6 +1210,14 @@ function formatWordPressDate(value, fallbackUrl = '', gmtValue = '') {
     date: formatWordPressDateTime(date),
     dateGmt: formatWordPressDateTime(gmtDate),
     rss: gmtDate.toUTCString()
+  };
+}
+
+function formatWordPressDateFromDate(date) {
+  return {
+    date: formatWordPressDateTime(date),
+    dateGmt: formatWordPressDateTime(date),
+    rss: date.toUTCString()
   };
 }
 
@@ -1149,6 +1307,18 @@ function parseDateFromUrl(value) {
   }
 }
 
+function parseDateFromUploadUrl(value) {
+  try {
+    const { pathname } = new URL(value);
+    const match = pathname.match(/\/wp-content\/uploads\/(\d{4})\/(\d{1,2})\//);
+    if (!match) return null;
+
+    return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 1));
+  } catch {
+    return null;
+  }
+}
+
 function slugifyTerm(value) {
   return String(value || '')
     .trim()
@@ -1156,6 +1326,34 @@ function slugifyTerm(value) {
     .replace(/&/g, ' and ')
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+function getAttachmentMimeType(value) {
+  const extension = getExportFilename(value).split('.').pop()?.toLowerCase();
+  const mimeTypes = {
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    png: 'image/png',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    txt: 'text/plain',
+    text: 'text/plain',
+    pdf: 'application/pdf',
+    mp3: 'audio/mpeg'
+  };
+
+  return mimeTypes[extension] || 'application/octet-stream';
+}
+
+function getExportFilename(value) {
+  try {
+    const url = new URL(value);
+    const filename = url.pathname.split('/').filter(Boolean).at(-1) || 'file';
+    return decodeURIComponent(filename);
+  } catch {
+    return 'file';
+  }
 }
 
 function formatSponsorLinks(links) {
