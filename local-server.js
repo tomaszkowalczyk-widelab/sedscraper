@@ -19,9 +19,11 @@ const mimeTypes = {
   '.json': 'application/json; charset=utf-8'
 };
 
-export const server = http.createServer(async (req, res) => {
+export async function handleRequest(req, res) {
   try {
-    if (req.method === 'POST' && req.url === '/api/scrape') {
+    const url = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+
+    if (req.method === 'POST' && url.pathname === '/api/scrape') {
       await handleScrape(req, res);
       return;
     }
@@ -35,7 +37,9 @@ export const server = http.createServer(async (req, res) => {
   } catch (error) {
     sendJson(res, 500, { error: error.message || 'A server error occurred.' });
   }
-});
+}
+
+export const server = http.createServer(handleRequest);
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   server.listen(PORT, () => {
