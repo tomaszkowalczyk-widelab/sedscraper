@@ -1181,7 +1181,7 @@ function getImageFilename(value) {
   try {
     const url = new URL(value);
     const filename = url.pathname.split('/').filter(Boolean).at(-1) || 'featured-image';
-    return decodeURIComponent(filename);
+    return cleanExportFilename(decodeURIComponent(filename));
   } catch {
     return 'featured-image';
   }
@@ -1240,31 +1240,33 @@ function resolveExportUrl(value, baseUrl = '') {
 
 function normalizeExportImageUrl(value) {
   try {
-    const url = new URL(value);
+    const url = new URL(cleanMediaUrlString(value));
 
     if (url.hostname === 'i0.wp.com' || url.hostname === 'i1.wp.com' || url.hostname === 'i2.wp.com') {
       const pathParts = url.pathname.split('/').filter(Boolean);
       const originalHost = pathParts.shift();
 
       if (originalHost) {
-        return `https://${originalHost}/${pathParts.join('/')}`;
+        return `https://${originalHost}/${cleanExportPath(pathParts.join('/'))}`;
       }
     }
 
+    url.pathname = cleanExportPath(url.pathname);
     url.search = '';
     url.hash = '';
     return url.toString();
   } catch {
-    return String(value || '').trim();
+    return cleanMediaUrlString(value);
   }
 }
 
 function normalizeExportFileUrl(value) {
-  const url = String(value || '').trim();
+  const url = cleanMediaUrlString(value);
   if (!url || url.startsWith('data:') || url.startsWith('blob:')) return '';
 
   try {
     const parsedUrl = new URL(url);
+    parsedUrl.pathname = cleanExportPath(parsedUrl.pathname);
     parsedUrl.hash = '';
     return parsedUrl.toString();
   } catch {
@@ -1276,7 +1278,7 @@ function getWordPressAttachedFilePath(value) {
   try {
     const { pathname } = new URL(value);
     const match = pathname.match(/\/wp-content\/uploads\/(.+)$/);
-    return decodeURIComponent(match?.[1] || pathname.split('/').filter(Boolean).at(-1) || 'image');
+    return cleanExportPath(decodeURIComponent(match?.[1] || pathname.split('/').filter(Boolean).at(-1) || 'image'));
   } catch {
     return getImageFilename(value);
   }
@@ -1429,12 +1431,34 @@ function getAttachmentMimeType(value) {
 
 function getExportFilename(value) {
   try {
-    const url = new URL(value);
+    const url = new URL(cleanMediaUrlString(value));
     const filename = url.pathname.split('/').filter(Boolean).at(-1) || 'file';
-    return decodeURIComponent(filename);
+    return cleanExportFilename(decodeURIComponent(filename));
   } catch {
     return 'file';
   }
+}
+
+function cleanMediaUrlString(value) {
+  return String(value || '')
+    .trim()
+    .replace(/&quot;|&#034;|&#34;|&#x22;/gi, '')
+    .replace(/%22/gi, '')
+    .replace(/%E2%80%9D/gi, '')
+    .replace(/%E2%80%9C/gi, '')
+    .replace(/["'\u201c\u201d]+$/g, '');
+}
+
+function cleanExportPath(value) {
+  return String(value || '')
+    .replace(/%22/gi, '')
+    .replace(/%E2%80%9D/gi, '')
+    .replace(/%E2%80%9C/gi, '')
+    .replace(/["'\u201c\u201d]+$/g, '');
+}
+
+function cleanExportFilename(value) {
+  return cleanExportPath(value).split('/').filter(Boolean).at(-1) || 'file';
 }
 
 function formatSponsorLinks(links) {
