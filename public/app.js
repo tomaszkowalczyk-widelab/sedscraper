@@ -144,39 +144,59 @@ export function createCsvRows(results) {
 
 export function createWordPressWxr(results) {
   const now = new Date().toUTCString();
-  const items = results
-    .filter((result) => result.ok)
+  const posts = results.filter((result) => result.ok);
+  const declaredTags = createWordPressTagDeclarations(posts);
+  const declaredCategories = createWordPressCategoryDeclarations(posts);
+  const attachmentStartId = posts.length + 1;
+  const items = posts
     .map((result, index) => {
       const title = result.title || '';
       const slug = getPostSlug(result.url);
       const content = result.postContent || result.articleContent || '';
+      const postDate = formatWordPressDate(result.publishedDate || result.date, result.url, result.publishedDateGmt);
+      const pubDate = postDate.rss || now;
+      const tags = createWordPressTagEntries(result.tags || []);
+      const categories = createWordPressCategoryEntries(result.categories || []);
       const postId = index + 1;
+      const attachmentId = result.featuredImage?.src ? attachmentStartId + index : '';
+      const thumbnailMeta = attachmentId
+        ? createWordPressPostMeta('_thumbnail_id', String(attachmentId))
+        : '';
 
       return [
         '    <item>',
         `      <title>${escapeXml(title)}</title>`,
         `      <link>${escapeXml(result.url || '')}</link>`,
-        `      <pubDate>${escapeXml(now)}</pubDate>`,
+        `      <pubDate>${escapeXml(pubDate)}</pubDate>`,
         `      <dc:creator><![CDATA[admin]]></dc:creator>`,
         `      <guid isPermaLink="false">${escapeXml(`sedscraper-post-${postId}`)}</guid>`,
         `      <description></description>`,
+        categories,
+        tags,
         `      <content:encoded><![CDATA[${escapeCdata(content)}]]></content:encoded>`,
         `      <excerpt:encoded><![CDATA[]]></excerpt:encoded>`,
         `      <wp:post_id>${postId}</wp:post_id>`,
-        `      <wp:post_date><![CDATA[]]></wp:post_date>`,
-        `      <wp:post_date_gmt><![CDATA[]]></wp:post_date_gmt>`,
+        `      <wp:post_date><![CDATA[${postDate.date}]]></wp:post_date>`,
+        `      <wp:post_date_gmt><![CDATA[${postDate.dateGmt}]]></wp:post_date_gmt>`,
+        `      <wp:post_modified><![CDATA[${postDate.date}]]></wp:post_modified>`,
+        `      <wp:post_modified_gmt><![CDATA[${postDate.dateGmt}]]></wp:post_modified_gmt>`,
         `      <wp:comment_status><![CDATA[closed]]></wp:comment_status>`,
         `      <wp:ping_status><![CDATA[closed]]></wp:ping_status>`,
         `      <wp:post_name><![CDATA[${escapeCdata(slug)}]]></wp:post_name>`,
-        `      <wp:status><![CDATA[draft]]></wp:status>`,
+        `      <wp:status><![CDATA[publish]]></wp:status>`,
         `      <wp:post_parent>0</wp:post_parent>`,
         `      <wp:menu_order>0</wp:menu_order>`,
         `      <wp:post_type><![CDATA[post]]></wp:post_type>`,
         `      <wp:post_password><![CDATA[]]></wp:post_password>`,
         `      <wp:is_sticky>0</wp:is_sticky>`,
+        thumbnailMeta,
         '    </item>'
-      ].join('\n');
+      ].filter(Boolean).join('\n');
     })
+    .join('\n');
+  const attachments = posts
+    .map((result, index) => createWordPressAttachmentItem(result, attachmentStartId + index, index + 1, now))
+    .filter(Boolean)
     .join('\n');
 
   return [
@@ -197,7 +217,18 @@ export function createWordPressWxr(results) {
     '    <wp:wxr_version>1.2</wp:wxr_version>',
     '    <wp:base_site_url>https://softwareengineeringdaily.com</wp:base_site_url>',
     '    <wp:base_blog_url>https://softwareengineeringdaily.com</wp:base_blog_url>',
+    '    <wp:author>',
+    '      <wp:author_id>1</wp:author_id>',
+    '      <wp:author_login><![CDATA[admin]]></wp:author_login>',
+    '      <wp:author_email><![CDATA[]]></wp:author_email>',
+    '      <wp:author_display_name><![CDATA[admin]]></wp:author_display_name>',
+    '      <wp:author_first_name><![CDATA[]]></wp:author_first_name>',
+    '      <wp:author_last_name><![CDATA[]]></wp:author_last_name>',
+    '    </wp:author>',
+    declaredCategories,
+    declaredTags,
     items,
+    attachments,
     '  </channel>',
     '</rss>'
   ].filter(Boolean).join('\n');
@@ -646,7 +677,249 @@ function escapeXml(value) {
 }
 
 function escapeCdata(value) {
-  return String(value || '').replaceAll(']]>', ']]]]><![CDATA[>');
+  return String(value || '').replace(/]]>/g, ']]]]><![CDATA[>');
+}
+
+function createWordPressTagDeclarations(results) {
+  const seen = new Set();
+  const declarations = [];
+
+  results.forEach((result) => {
+    (result.tags || []).forEach((tag) => {
+      const term = normalizeWordPressExportTerm(tag);
+      if (!term.name || seen.has(term.slug)) return;
+
+      seen.add(term.slug);
+      declarations.push([
+        '    <wp:tag>',
+        `      <wp:term_id>${declarations.length + 1}</wp:term_id>`,
+        `      <wp:tag_slug><![CDATA[${escapeCdata(term.slug)}]]></wp:tag_slug>`,
+        `      <wp:tag_name><![CDATA[${escapeCdata(term.name)}]]></wp:tag_name>`,
+        '    </wp:tag>'
+      ].join('\n'));
+    });
+  });
+
+  return declarations.join('\n');
+}
+
+function createWordPressCategoryDeclarations(results) {
+  const seen = new Set();
+  const declarations = [];
+
+  results.forEach((result) => {
+    (result.categories || []).forEach((category) => {
+      const term = normalizeWordPressExportTerm(category);
+      if (!term.name || seen.has(term.slug)) return;
+
+      seen.add(term.slug);
+      declarations.push([
+        '    <wp:category>',
+        `      <wp:term_id>${declarations.length + 1}</wp:term_id>`,
+        `      <wp:category_nicename><![CDATA[${escapeCdata(term.slug)}]]></wp:category_nicename>`,
+        `      <wp:cat_name><![CDATA[${escapeCdata(term.name)}]]></wp:cat_name>`,
+        '    </wp:category>'
+      ].join('\n'));
+    });
+  });
+
+  return declarations.join('\n');
+}
+
+function createWordPressTagEntries(tags) {
+  return tags
+    .map((tag) => {
+      const term = normalizeWordPressExportTerm(tag);
+      if (!term.name) return '';
+
+      return `      <category domain="post_tag" nicename="${escapeXml(term.slug)}"><![CDATA[${escapeCdata(term.name)}]]></category>`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function createWordPressCategoryEntries(categories) {
+  return categories
+    .map((category) => {
+      const term = normalizeWordPressExportTerm(category);
+      if (!term.name) return '';
+
+      return `      <category domain="category" nicename="${escapeXml(term.slug)}"><![CDATA[${escapeCdata(term.name)}]]></category>`;
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function createWordPressAttachmentItem(result, attachmentId, postId, fallbackDate) {
+  const imageUrl = result.featuredImage?.src || '';
+  if (!imageUrl) return '';
+
+  const postDate = formatWordPressDate(result.publishedDate || result.date, result.url, result.publishedDateGmt);
+  const pubDate = postDate.rss || fallbackDate;
+  const imageTitle = result.featuredImage?.alt || result.title || getImageFilename(imageUrl);
+  const imageSlug = slugifyTerm(getImageFilename(imageUrl).replace(/\.[a-z0-9]+$/i, '') || imageTitle);
+
+  return [
+    '    <item>',
+    `      <title>${escapeXml(imageTitle)}</title>`,
+    `      <link>${escapeXml(imageUrl)}</link>`,
+    `      <pubDate>${escapeXml(pubDate)}</pubDate>`,
+    `      <dc:creator><![CDATA[admin]]></dc:creator>`,
+    `      <guid isPermaLink="false">${escapeXml(imageUrl)}</guid>`,
+    `      <description></description>`,
+    `      <content:encoded><![CDATA[]]></content:encoded>`,
+    `      <excerpt:encoded><![CDATA[]]></excerpt:encoded>`,
+    `      <wp:post_id>${attachmentId}</wp:post_id>`,
+    `      <wp:post_date><![CDATA[${postDate.date}]]></wp:post_date>`,
+    `      <wp:post_date_gmt><![CDATA[${postDate.dateGmt}]]></wp:post_date_gmt>`,
+    `      <wp:post_modified><![CDATA[${postDate.date}]]></wp:post_modified>`,
+    `      <wp:post_modified_gmt><![CDATA[${postDate.dateGmt}]]></wp:post_modified_gmt>`,
+    `      <wp:comment_status><![CDATA[closed]]></wp:comment_status>`,
+    `      <wp:ping_status><![CDATA[closed]]></wp:ping_status>`,
+    `      <wp:post_name><![CDATA[${escapeCdata(imageSlug)}]]></wp:post_name>`,
+    `      <wp:status><![CDATA[inherit]]></wp:status>`,
+    `      <wp:post_parent>${postId}</wp:post_parent>`,
+    `      <wp:menu_order>0</wp:menu_order>`,
+    `      <wp:post_type><![CDATA[attachment]]></wp:post_type>`,
+    `      <wp:post_password><![CDATA[]]></wp:post_password>`,
+    `      <wp:is_sticky>0</wp:is_sticky>`,
+    `      <wp:attachment_url>${escapeXml(imageUrl)}</wp:attachment_url>`,
+    createWordPressPostMeta('_wp_attached_file', imageUrl),
+    '    </item>'
+  ].join('\n');
+}
+
+function createWordPressPostMeta(key, value) {
+  return [
+    '      <wp:postmeta>',
+    `        <wp:meta_key><![CDATA[${escapeCdata(key)}]]></wp:meta_key>`,
+    `        <wp:meta_value><![CDATA[${escapeCdata(value)}]]></wp:meta_value>`,
+    '      </wp:postmeta>'
+  ].join('\n');
+}
+
+function normalizeWordPressExportTerm(term) {
+  const name = String(term?.name || term?.slug || term || '').trim();
+  const slug = String(term?.slug || slugifyTerm(name)).trim();
+
+  return { name, slug };
+}
+
+function getImageFilename(value) {
+  try {
+    const url = new URL(value);
+    const filename = url.pathname.split('/').filter(Boolean).at(-1) || 'featured-image';
+    return decodeURIComponent(filename);
+  } catch {
+    return 'featured-image';
+  }
+}
+
+function formatWordPressDate(value, fallbackUrl = '', gmtValue = '') {
+  const date = parseScrapedDate(value) || parseDateFromUrl(fallbackUrl);
+  if (!date) return { date: '', dateGmt: '', rss: '' };
+  const gmtDate = parseScrapedDate(gmtValue) || date;
+
+  return {
+    date: formatWordPressDateTime(date),
+    dateGmt: formatWordPressDateTime(gmtDate),
+    rss: gmtDate.toUTCString()
+  };
+}
+
+function formatWordPressDateTime(date) {
+  const day = [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0')
+  ].join('-');
+  const time = [
+    String(date.getUTCHours()).padStart(2, '0'),
+    String(date.getUTCMinutes()).padStart(2, '0'),
+    String(date.getUTCSeconds()).padStart(2, '0')
+  ].join(':');
+
+  return `${day} ${time}`;
+}
+
+function parseScrapedDate(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  const monthNames = {
+    jan: 0,
+    january: 0,
+    feb: 1,
+    february: 1,
+    mar: 2,
+    march: 2,
+    apr: 3,
+    april: 3,
+    may: 4,
+    jun: 5,
+    june: 5,
+    jul: 6,
+    july: 6,
+    aug: 7,
+    august: 7,
+    sep: 8,
+    sept: 8,
+    september: 8,
+    oct: 9,
+    october: 9,
+    nov: 10,
+    november: 10,
+    dec: 11,
+    december: 11
+  };
+  const monthMatch = text.match(/\b([A-Za-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})\b/);
+
+  if (monthMatch) {
+    const month = monthNames[monthMatch[1].toLowerCase()];
+    const day = Number(monthMatch[2]);
+    const year = Number(monthMatch[3]);
+
+    if (Number.isInteger(month) && Number.isFinite(day) && Number.isFinite(year)) {
+      return new Date(Date.UTC(year, month, day));
+    }
+  }
+
+  const numericMatch = text.match(/\b(\d{4})[./-](\d{1,2})[./-](\d{1,2})\b/);
+  if (numericMatch) {
+    const timeMatch = text.match(/\b\d{4}[./-]\d{1,2}[./-]\d{1,2}[T\s](\d{1,2}):(\d{2})(?::(\d{2}))?\b/);
+    return new Date(Date.UTC(
+      Number(numericMatch[1]),
+      Number(numericMatch[2]) - 1,
+      Number(numericMatch[3]),
+      timeMatch ? Number(timeMatch[1]) : 0,
+      timeMatch ? Number(timeMatch[2]) : 0,
+      timeMatch?.[3] ? Number(timeMatch[3]) : 0
+    ));
+  }
+
+  const timestamp = Date.parse(text);
+  return Number.isFinite(timestamp) ? new Date(timestamp) : null;
+}
+
+function parseDateFromUrl(value) {
+  try {
+    const { pathname } = new URL(value);
+    const match = pathname.match(/\/(\d{4})\/(\d{1,2})\/(\d{1,2})(?:\/|$)/);
+    if (!match) return null;
+
+    return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  } catch {
+    return null;
+  }
+}
+
+function slugifyTerm(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 function formatSponsorLinks(links) {

@@ -82,7 +82,6 @@ async function scrapeLink(url) {
     const meta = extractArticleMeta(html);
     const title = extractPostTitle(html);
     const featuredImage = extractFeaturedImage(html, url);
-    const date = extractDateValue(meta);
     const category = detectCategory({ url, title, meta });
     const postContent = extractPostContent(html);
     const powerPressLink = category === 'Podcast'
@@ -96,6 +95,10 @@ async function scrapeLink(url) {
       : [];
     const postContentHtml = extractArticleContent(postContent, url);
     const taxonomies = await fetchWordPressTaxonomies(html, url);
+    const fallbackPublishedDate = extractHtmlPublishedDate(html);
+    const publishedDate = taxonomies.publishedDate || fallbackPublishedDate.date;
+    const publishedDateGmt = taxonomies.publishedDateGmt || fallbackPublishedDate.dateGmt;
+    const date = formatPublishedDateForDisplay(publishedDate) || extractDateValue(meta);
 
     return {
       url,
@@ -112,6 +115,8 @@ async function scrapeLink(url) {
       articleContent: category === 'Article' ? postContentHtml : '',
       tags: taxonomies.tags,
       categories: taxonomies.categories,
+      publishedDate,
+      publishedDateGmt,
       meta
     };
   } catch (error) {
@@ -130,6 +135,8 @@ async function scrapeLink(url) {
       articleContent: '',
       tags: [],
       categories: [],
+      publishedDate: '',
+      publishedDateGmt: '',
       meta: [],
       error: error.message || 'Could not fetch the page.'
     };
@@ -223,7 +230,7 @@ async function fetchWordPressTaxonomies(html, pageUrl) {
   try {
     const restRoot = getWordPressRestRoot(html, pageUrl);
     const slug = getSlugFromUrl(pageUrl);
-    if (!restRoot) return { tags: [], categories: [] };
+    if (!restRoot) return { tags: [], categories: [], publishedDate: '', publishedDateGmt: '' };
 
     const post = await fetchWordPressPost(restRoot, slug, html, pageUrl);
     const tagIds = normalizeTermIds(post?.tags);
@@ -236,12 +243,16 @@ async function fetchWordPressTaxonomies(html, pageUrl) {
 
     return {
       tags: uniqueTerms(tags.length ? tags : extractHtmlTagTerms(html, pageUrl)),
-      categories: uniqueTerms(categories.length ? categories : extractHtmlCategoryTerms(html, pageUrl))
+      categories: uniqueTerms(categories.length ? categories : extractHtmlCategoryTerms(html, pageUrl)),
+      publishedDate: normalizeWordPressRestDate(post?.date),
+      publishedDateGmt: normalizeWordPressRestDate(post?.date_gmt)
     };
   } catch {
     return {
       tags: uniqueTerms(extractHtmlTagTerms(html, pageUrl)),
-      categories: uniqueTerms(extractHtmlCategoryTerms(html, pageUrl))
+      categories: uniqueTerms(extractHtmlCategoryTerms(html, pageUrl)),
+      publishedDate: '',
+      publishedDateGmt: ''
     };
   }
 }
@@ -252,6 +263,77 @@ function normalizeTermIds(value) {
   return value
     .map((id) => Number(id))
     .filter(Number.isFinite);
+}
+
+function normalizeWordPressRestDate(value) {
+  return String(value || '')
+    .trim()
+    .replace('T', ' ')
+    .replace(/(?:Z|[+-]\d{2}:?\d{2})$/, '');
+}
+
+function extractHtmlPublishedDate(html) {
+  const metaPattern = /<meta\b[^>]*(?:property|name)\s*=\s*(["'])(?:article:published_time|datePublished|pubdate)\1[^>]*>/gi;
+  let match;
+
+  while ((match = metaPattern.exec(html)) !== null) {
+    const content = extractAttribute(match[0], 'content');
+    const date = formatIsoDateForWordPress(content);
+    if (date.date) return date;
+  }
+
+  const schemaDateMatch = html.match(/"datePublished"\s*:\s*"([^"]+)"/i);
+  if (schemaDateMatch) {
+    return formatIsoDateForWordPress(decodeHtmlEntities(schemaDateMatch[1]));
+  }
+
+  return { date: '', dateGmt: '' };
+}
+
+function formatIsoDateForWordPress(value) {
+  const timestamp = Date.parse(String(value || '').trim());
+  if (!Number.isFinite(timestamp)) return { date: '', dateGmt: '' };
+
+  const date = new Date(timestamp);
+  const wordpressDate = [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, '0'),
+    String(date.getUTCDate()).padStart(2, '0')
+  ].join('-');
+  const wordpressTime = [
+    String(date.getUTCHours()).padStart(2, '0'),
+    String(date.getUTCMinutes()).padStart(2, '0'),
+    String(date.getUTCSeconds()).padStart(2, '0')
+  ].join(':');
+
+  return {
+    date: `${wordpressDate} ${wordpressTime}`,
+    dateGmt: `${wordpressDate} ${wordpressTime}`
+  };
+}
+
+function formatPublishedDateForDisplay(value) {
+  const match = String(value || '').match(/\b(\d{4})-(\d{2})-(\d{2})\s+(\d{2}:\d{2}(?::\d{2})?)\b/);
+  if (!match) return '';
+
+  const monthNames = [
+    'January',
+    'February',
+    'March',
+    'April',
+    'May',
+    'June',
+    'July',
+    'August',
+    'September',
+    'October',
+    'November',
+    'December'
+  ];
+  const month = monthNames[Number(match[2]) - 1];
+  if (!month) return value;
+
+  return `${month} ${Number(match[3])} ${match[1]}, ${match[4]}`;
 }
 
 function extractHtmlTagTerms(html, pageUrl) {
@@ -319,10 +401,11 @@ export function getSlugFromUrl(pageUrl) {
 
 async function fetchWordPressPost(restRoot, slug, html, pageUrl) {
   const directPostUrls = extractWordPressPostRestUrls(html, pageUrl);
+  const postFields = 'id,slug,tags,categories,date,date_gmt';
 
   for (const url of directPostUrls) {
     try {
-      const post = await fetchJson(addFieldsToRestUrl(url, 'id,slug,tags,categories'));
+      const post = await fetchJson(addFieldsToRestUrl(url, postFields));
       if (post && !Array.isArray(post)) return post;
     } catch {
       // Try the next discovered REST URL.
@@ -330,7 +413,7 @@ async function fetchWordPressPost(restRoot, slug, html, pageUrl) {
   }
 
   for (const postId of extractWordPressPostIds(html)) {
-    const url = `${restRoot}wp/v2/posts/${postId}?_fields=id,slug,tags,categories`;
+    const url = `${restRoot}wp/v2/posts/${postId}?_fields=${postFields}`;
 
     try {
       const post = await fetchJson(url);
@@ -341,7 +424,7 @@ async function fetchWordPressPost(restRoot, slug, html, pageUrl) {
   }
 
   if (slug) {
-    const standardPostUrl = `${restRoot}wp/v2/posts?slug=${encodeURIComponent(slug)}&_fields=id,slug,tags,categories`;
+    const standardPostUrl = `${restRoot}wp/v2/posts?slug=${encodeURIComponent(slug)}&_fields=${postFields}`;
 
     try {
       const posts = await fetchJson(standardPostUrl);
