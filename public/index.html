@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>SEDscraper</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace" aria-labelledby="title">
+        <header class="header">
+          <h1 id="title">SEDscraper</h1>
+        </header>
+
+        <form id="scrape-form" class="scrape-form panel">
+          <label for="links">Links to scrape</label>
+          <textarea id="links" name="links" spellcheck="false" placeholder="https://example.com/article-1&#10;https://example.com/article-2"></textarea>
+          <div class="actions">
+            <button type="submit" id="submit-button">
+              <span class="button-icon" aria-hidden="true">↳</span>
+              Scrape
+            </button>
+            <button type="button" id="clear-button" class="ghost">Clear</button>
+            <button type="button" id="csv-button" class="ghost" disabled>CSV</button>
+            <label class="select-control" for="sponsor-filter">
+              <span>Sponsors</span>
+              <select id="sponsor-filter" name="sponsor-filter">
+                <option value="all">All</option>
+                <option value="with">With sponsors</option>
+                <option value="without">Without sponsors</option>
+              </select>
+            </label>
+            <label class="select-control" for="sponsor-view">
+              <span>View</span>
+              <select id="sponsor-view" name="sponsor-view" disabled>
+                <option value="posts">Posts</option>
+                <option value="sponsors">Sponsors only</option>
+              </select>
+            </label>
+            <label class="select-control" for="post-type-filter">
+              <span>Show</span>
+              <select id="post-type-filter" name="post-type-filter">
+                <option value="all">All post types</option>
+                <option value="Article">Article</option>
+                <option value="Podcast">Podcast</option>
+              </select>
+            </label>
+          </div>
+          <p id="status" class="status" role="status" aria-live="polite">One line = one link. Limit: 100 URLs.</p>
+        </form>
+      </section>
+
+      <section class="results" aria-labelledby="results-title">
+        <div class="results-head">
+          <h2 id="results-title">Results</h2>
+          <span id="summary">No data</span>
+        </div>
+        <div id="results-list" class="results-list"></div>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>
