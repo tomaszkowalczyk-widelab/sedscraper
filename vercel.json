@@ -1,6 +1,6 @@
 {
   "functions": {
-    "server.js": {
+    "api/scrape.js": {
       "maxDuration": 60
     }
   }

@@ -2,7 +2,7 @@ import http from 'node:http';
 import https from 'node:https';
 import { readFile } from 'node:fs/promises';
 import { extname, join, normalize } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const PORT = Number(process.env.PORT || 3000);
 const ROOT = fileURLToPath(new URL('.', import.meta.url));
@@ -37,16 +37,13 @@ export const server = http.createServer(async (req, res) => {
   }
 });
 
-export default server;
-
-// Vercel captures server.listen() to route requests into this HTTP server.
-server.listen(PORT, () => {
-  if (!process.env.VERCEL) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  server.listen(PORT, () => {
     console.log(`SEDscraper running: http://localhost:${PORT}`);
-  }
-});
+  });
+}
 
-async function handleScrape(req, res) {
+export async function handleScrape(req, res) {
   const body = await readRequestBody(req);
   let payload;
 
@@ -1114,6 +1111,18 @@ async function serveStatic(req, res) {
 }
 
 function readRequestBody(req) {
+  if (req.body !== undefined && req.body !== null) {
+    if (typeof req.body === 'string') {
+      return Promise.resolve(req.body);
+    }
+
+    if (Buffer.isBuffer(req.body)) {
+      return Promise.resolve(req.body.toString());
+    }
+
+    return Promise.resolve(JSON.stringify(req.body));
+  }
+
   return new Promise((resolve, reject) => {
     let body = '';
 
