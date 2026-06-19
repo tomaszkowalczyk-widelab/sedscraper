@@ -17,35 +17,42 @@
           <label for="links">Links to scrape</label>
           <textarea id="links" name="links" spellcheck="false" placeholder="https://example.com/article-1&#10;https://example.com/article-2"></textarea>
           <div class="actions">
-            <button type="submit" id="submit-button">
-              <span class="button-icon" aria-hidden="true">↳</span>
-              Scrape
-            </button>
-            <button type="button" id="clear-button" class="ghost">Clear</button>
-            <button type="button" id="csv-button" class="ghost" disabled>CSV</button>
-            <label class="select-control" for="sponsor-filter">
-              <span>Sponsors</span>
-              <select id="sponsor-filter" name="sponsor-filter">
-                <option value="all">All</option>
-                <option value="with">With sponsors</option>
-                <option value="without">Without sponsors</option>
-              </select>
-            </label>
-            <label class="select-control" for="sponsor-view">
-              <span>View</span>
-              <select id="sponsor-view" name="sponsor-view" disabled>
-                <option value="posts">Posts</option>
-                <option value="sponsors">Sponsors only</option>
-              </select>
-            </label>
-            <label class="select-control" for="post-type-filter">
-              <span>Show</span>
-              <select id="post-type-filter" name="post-type-filter">
-                <option value="all">All post types</option>
-                <option value="Article">Article</option>
-                <option value="Podcast">Podcast</option>
-              </select>
-            </label>
+            <div class="action-group scrape-actions">
+              <button type="submit" id="submit-button">
+                <span class="button-icon" aria-hidden="true">↳</span>
+                Scrape
+              </button>
+              <button type="button" id="clear-button" class="ghost">Clear</button>
+            </div>
+            <div class="action-group filter-actions">
+              <label class="select-control" for="sponsor-filter">
+                <span>Sponsors</span>
+                <select id="sponsor-filter" name="sponsor-filter">
+                  <option value="all">All</option>
+                  <option value="with">With sponsors</option>
+                  <option value="without">Without sponsors</option>
+                </select>
+              </label>
+              <label class="select-control" for="sponsor-view">
+                <span>View</span>
+                <select id="sponsor-view" name="sponsor-view" disabled>
+                  <option value="posts">Posts</option>
+                  <option value="sponsors">Sponsors only</option>
+                </select>
+              </label>
+              <label class="select-control" for="post-type-filter">
+                <span>Show</span>
+                <select id="post-type-filter" name="post-type-filter">
+                  <option value="all">All post types</option>
+                  <option value="Article">Article</option>
+                  <option value="Podcast">Podcast</option>
+                </select>
+              </label>
+            </div>
+            <div class="action-group export-actions">
+              <button type="button" id="csv-button" class="ghost" disabled>CSV</button>
+              <button type="button" id="wordpress-export-button" class="ghost" disabled>Export for WordPress</button>
+            </div>
           </div>
           <p id="status" class="status" role="status" aria-live="polite">One line = one link. Limit: 100 URLs.</p>
         </form>
