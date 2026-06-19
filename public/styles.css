@@ -398,6 +398,28 @@ select:disabled {
   margin-bottom: 0;
 }
 
+.category-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.category-tree .category-tree {
+  margin-top: 6px;
+}
+
+.category-tree-item {
+  margin: 0;
+  font-weight: 800;
+}
+
+.category-tree-item span {
+  display: inline-block;
+}
+
 .article-content-field p,
 .article-content-field ul,
 .article-content-field ol,

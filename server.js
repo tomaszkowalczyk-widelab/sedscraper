@@ -268,6 +268,7 @@ function normalizeTermIds(value) {
 
 async function hydrateCategoryParents(restRoot, categories) {
   const byId = new Map(categories.filter((category) => category.id).map((category) => [category.id, category]));
+  const requestedIds = new Set(categories.map((category) => category.id).filter(Boolean));
   let missingParentIds = categories
     .map((category) => category.parent)
     .filter((parentId) => parentId && !byId.has(parentId));
@@ -285,17 +286,37 @@ async function hydrateCategoryParents(restRoot, categories) {
       .filter((parentId) => parentId && !byId.has(parentId));
   }
 
-  return categories.map((category) => {
+  const hydrated = [...byId.values()].map((category) => {
     const parent = byId.get(category.parent);
 
-    return parent
-      ? {
-          ...category,
-          parentSlug: parent.slug,
-          parentName: parent.name
-        }
-      : category;
+    return {
+      ...category,
+      parentSlug: parent?.slug || '',
+      parentName: parent?.name || '',
+      assigned: requestedIds.has(category.id)
+    };
   });
+
+  return sortCategoriesByHierarchy(hydrated);
+}
+
+function sortCategoriesByHierarchy(categories) {
+  const byId = new Map(categories.filter((category) => category.id).map((category) => [category.id, category]));
+  const visited = new Set();
+  const sorted = [];
+
+  const visit = (category) => {
+    if (!category?.id || visited.has(category.id)) return;
+
+    const parent = byId.get(category.parent);
+    if (parent) visit(parent);
+
+    visited.add(category.id);
+    sorted.push(category);
+  };
+
+  categories.forEach(visit);
+  return sorted;
 }
 
 function normalizeWordPressRestDate(value) {

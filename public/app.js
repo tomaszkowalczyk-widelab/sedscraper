@@ -320,7 +320,7 @@ function renderResults(results) {
         createDetail('Category', result.category || 'Article')
       );
 
-      details.append(createDetail('Categories', formatTerms(result.categories || []) || 'No categories', 'full'));
+      details.append(createCategoryTreeDetail(result.categories || []));
       details.append(createDetail('Tags', formatTerms(result.tags || []) || 'No tags', 'full'));
 
       if (result.category === 'Podcast' && result.powerPressLink) {
@@ -466,6 +466,86 @@ function createSponsors(sponsors) {
 
   section.append(list);
   return section;
+}
+
+function createCategoryTreeDetail(categories) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'result-field full category-tree-field';
+
+  const copyValue = formatCategoryHierarchy(categories) || 'No categories';
+  const term = createFieldTerm('Categories', copyValue);
+
+  const description = document.createElement('dd');
+  if (!categories.length) {
+    description.textContent = 'No categories';
+  } else {
+    description.append(createCategoryTree(categories));
+  }
+
+  wrapper.append(term, description);
+  return wrapper;
+}
+
+function createCategoryTree(categories) {
+  const tree = buildCategoryTree(categories);
+  const list = document.createElement('ul');
+  list.className = 'category-tree';
+
+  tree.forEach((node) => {
+    list.append(createCategoryTreeItem(node, 0));
+  });
+
+  return list;
+}
+
+function createCategoryTreeItem(node, depth) {
+  const item = document.createElement('li');
+  item.className = 'category-tree-item';
+  item.style.setProperty('--depth', String(depth));
+
+  const label = document.createElement('span');
+  label.textContent = `${'-'.repeat(depth)}${depth ? ' ' : ''}${node.category.name || node.category.slug}`;
+  item.append(label);
+
+  if (node.children.length) {
+    const list = document.createElement('ul');
+    list.className = 'category-tree';
+    node.children.forEach((child) => {
+      list.append(createCategoryTreeItem(child, depth + 1));
+    });
+    item.append(list);
+  }
+
+  return item;
+}
+
+function buildCategoryTree(categories) {
+  const nodesBySlug = new Map();
+  const roots = [];
+
+  categories.forEach((category) => {
+    if (!category?.slug) return;
+
+    nodesBySlug.set(category.slug, {
+      category,
+      children: []
+    });
+  });
+
+  categories.forEach((category) => {
+    if (!category?.slug) return;
+
+    const node = nodesBySlug.get(category.slug);
+    const parent = category.parentSlug ? nodesBySlug.get(category.parentSlug) : null;
+
+    if (parent) {
+      parent.children.push(node);
+    } else {
+      roots.push(node);
+    }
+  });
+
+  return roots;
 }
 
 function createSponsorItem(sponsor) {
@@ -750,6 +830,7 @@ function createWordPressTagEntries(tags) {
 
 function createWordPressCategoryEntries(categories) {
   return categories
+    .filter((category) => category.assigned !== false)
     .map((category) => {
       const term = normalizeWordPressExportTerm(category);
       if (!term.name) return '';
@@ -1362,6 +1443,34 @@ function formatSponsorLinks(links) {
 
 function formatTerms(terms) {
   return terms.map((term) => term.name || term.slug || String(term)).filter(Boolean).join(', ');
+}
+
+function formatCategoryHierarchy(categories) {
+  const bySlug = new Map(
+    categories
+      .filter((category) => category?.slug)
+      .map((category) => [category.slug, category])
+  );
+
+  return categories
+    .map((category) => {
+      const path = [];
+      const seen = new Set();
+      let current = category;
+
+      while (current && !seen.has(current.slug || current.name)) {
+        seen.add(current.slug || current.name);
+        path.unshift(current.name || current.slug);
+
+        current = current.parentSlug
+          ? bySlug.get(current.parentSlug) || { name: current.parentName || current.parentSlug, slug: current.parentSlug }
+          : null;
+      }
+
+      return path.filter(Boolean).join(' > ');
+    })
+    .filter(Boolean)
+    .join(', ');
 }
 
 function htmlToText(html) {
