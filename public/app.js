@@ -147,7 +147,8 @@ export function createWordPressWxr(results) {
   const posts = results.filter((result) => result.ok);
   const declaredTags = createWordPressTagDeclarations(posts);
   const declaredCategories = createWordPressCategoryDeclarations(posts);
-  const attachmentPlan = createWordPressAttachmentPlan(posts);
+  const sponsorPlan = createWordPressSponsorPlan(posts, posts.length + 1);
+  const attachmentPlan = createWordPressAttachmentPlan(posts, sponsorPlan.nextId, sponsorPlan);
   const items = posts
     .map((result, index) => {
       const title = result.title || '';
@@ -163,6 +164,10 @@ export function createWordPressWxr(results) {
       const featuredAttachment = postAttachments.find((attachment) => attachment.isFeatured);
       const thumbnailMeta = featuredAttachment
         ? createWordPressPostMeta('_thumbnail_id', String(featuredAttachment.id))
+        : '';
+      const postType = result.category === 'Podcast' ? 'podcast' : 'post';
+      const podcastMeta = postType === 'podcast'
+        ? createWordPressPodcastMeta(result, sponsorPlan, postAttachments)
         : '';
 
       return [
@@ -188,16 +193,20 @@ export function createWordPressWxr(results) {
         `      <wp:status><![CDATA[publish]]></wp:status>`,
         `      <wp:post_parent>0</wp:post_parent>`,
         `      <wp:menu_order>0</wp:menu_order>`,
-        `      <wp:post_type><![CDATA[post]]></wp:post_type>`,
+        `      <wp:post_type><![CDATA[${postType}]]></wp:post_type>`,
         `      <wp:post_password><![CDATA[]]></wp:post_password>`,
         `      <wp:is_sticky>0</wp:is_sticky>`,
         thumbnailMeta,
+        podcastMeta,
         '    </item>'
       ].filter(Boolean).join('\n');
     })
     .join('\n');
   const attachments = attachmentPlan.attachments
     .map((attachment) => createWordPressAttachmentItem(attachment, now))
+    .join('\n');
+  const sponsors = sponsorPlan.sponsors
+    .map((sponsor) => createWordPressSponsorItem(sponsor, now))
     .join('\n');
 
   return [
@@ -229,6 +238,7 @@ export function createWordPressWxr(results) {
     declaredCategories,
     declaredTags,
     attachments,
+    sponsors,
     items,
     '  </channel>',
     '</rss>'
@@ -841,10 +851,126 @@ function createWordPressCategoryEntries(categories) {
     .join('\n');
 }
 
-function createWordPressAttachmentPlan(posts) {
+const ACF_FIELD_KEYS = {
+  podcastSponsors: 'field_6a74sedpodsponsors',
+  podcastTranscript: 'field_6a74sedpodtranscript',
+  sponsorLogo: 'field_6a70sed5logo01',
+  sponsorLinkUrl: 'field_6a70sed5link01',
+  sponsorDescription: 'field_6a70sed5desc01',
+  sponsorDarkLogoBackground: 'field_6a70sed5dark01',
+  sponsorName: 'field_6a70sed5name01'
+};
+
+function createWordPressSponsorPlan(posts, startId) {
+  const seen = new Set();
+  const byImage = new Map();
+  const byName = new Map();
+  const sponsors = [];
+  const byKey = new Map();
+  let nextId = startId;
+
+  posts.forEach((post) => {
+    (post.sponsors || []).forEach((rawSponsor) => {
+      const sponsor = normalizeWordPressSponsor(rawSponsor);
+      const key = sponsor.key;
+      const imageKey = sponsor.image || '';
+      const nameKey = slugifyTerm(sponsor.name);
+      const existingSponsor = (imageKey && byImage.get(imageKey))
+        || (nameKey && byName.get(nameKey))
+        || byKey.get(key);
+
+      if (!key) return;
+
+      if (existingSponsor || seen.has(key)) {
+        byKey.set(key, existingSponsor || byKey.get(key));
+        return;
+      }
+
+      seen.add(key);
+      sponsor.id = nextId;
+      nextId += 1;
+      sponsors.push(sponsor);
+      byKey.set(key, sponsor);
+      if (imageKey) byImage.set(imageKey, sponsor);
+      if (nameKey) byName.set(nameKey, sponsor);
+    });
+  });
+
+  return { sponsors, byKey, nextId };
+}
+
+function normalizeWordPressSponsor(sponsor) {
+  const image = normalizeExportImageUrl(sponsor.image || '');
+  const description = sponsor.description || sponsor.descriptionText || '';
+  const descriptionText = sponsor.descriptionText || htmlToText(description);
+  const linkUrl = getPrimarySponsorLink(sponsor);
+  const name = getSponsorName(sponsor, { image, descriptionText, linkUrl });
+  const key = getSponsorDeduplicationKey({ name, image, descriptionText, linkUrl });
+
+  return {
+    id: 0,
+    key,
+    name,
+    slug: slugifyTerm(name || key || 'sponsor'),
+    image,
+    alt: sponsor.alt || name,
+    description,
+    descriptionText,
+    linkUrl,
+    logoAttachmentId: 0
+  };
+}
+
+function getPrimarySponsorLink(sponsor) {
+  const link = (sponsor.links || []).find((item) => item?.url);
+  return link?.url || '';
+}
+
+function getSponsorName(sponsor, fallback) {
+  const explicitName = sponsor.name || sponsor.title || sponsor.alt;
+  if (explicitName) return String(explicitName).trim();
+
+  const linkText = (sponsor.links || []).find((item) => item?.text && item.text !== item.url)?.text;
+  if (linkText) return String(linkText).trim();
+
+  if (fallback.linkUrl) {
+    try {
+      const host = new URL(fallback.linkUrl).hostname.replace(/^www\./, '');
+      const hostName = host.split('.')[0];
+      if (hostName) return titleCaseFromSlug(hostName);
+    } catch {
+      // Fall through to image or description fallback.
+    }
+  }
+
+  if (fallback.image) {
+    const filename = getImageFilename(fallback.image).replace(/\.[a-z0-9]+$/i, '');
+    if (filename) return titleCaseFromSlug(filename);
+  }
+
+  return fallback.descriptionText.split(/\s+/).slice(0, 4).join(' ') || 'Sponsor';
+}
+
+function getSponsorDeduplicationKey({ name, image, descriptionText, linkUrl }) {
+  if (image) return `image:${image}`;
+  if (name) return `name:${slugifyTerm(name)}`;
+  if (linkUrl) return `link:${linkUrl}`;
+  return `content:${descriptionText}`;
+}
+
+function titleCaseFromSlug(value) {
+  return String(value || '')
+    .replace(/\.[a-z0-9]+$/i, '')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function createWordPressAttachmentPlan(posts, startId, sponsorPlan) {
   const attachments = [];
   const byPostId = new Map();
-  let nextAttachmentId = posts.length + 1;
+  let nextAttachmentId = startId;
 
   posts.forEach((post, index) => {
     const postId = index + 1;
@@ -890,6 +1016,31 @@ function createWordPressAttachmentPlan(posts) {
     byPostId.set(postId, postAttachments);
   });
 
+  sponsorPlan.sponsors.forEach((sponsor) => {
+    if (!sponsor.image) return;
+
+    const attachment = {
+      url: sponsor.image,
+      alt: sponsor.alt || sponsor.name,
+      isFeatured: false,
+      isSponsorLogo: true,
+      sponsorId: sponsor.id,
+      postId: sponsor.id,
+      post: {
+        url: '',
+        date: '',
+        publishedDate: '',
+        publishedDateGmt: ''
+      },
+      title: sponsor.alt || sponsor.name || getImageFilename(sponsor.image)
+    };
+
+    attachment.id = nextAttachmentId;
+    nextAttachmentId += 1;
+    sponsor.logoAttachmentId = attachment.id;
+    attachments.push(attachment);
+  });
+
   return { attachments, byPostId };
 }
 
@@ -928,6 +1079,106 @@ function getPostExportFiles(result) {
   }
 
   return files;
+}
+
+function createWordPressPodcastMeta(result, sponsorPlan, postAttachments) {
+  const meta = [];
+  const powerPressLink = normalizeExportFileUrl(result.powerPressLink || '');
+  const transcriptAttachment = postAttachments.find((attachment) => attachment.isTranscript);
+  const transcriptValue = transcriptAttachment?.id
+    ? String(transcriptAttachment.id)
+    : normalizeExportFileUrl(result.transcriptLink || '');
+  const sponsorIds = [...new Set((result.sponsors || [])
+    .map((rawSponsor) => sponsorPlan.byKey.get(normalizeWordPressSponsor(rawSponsor).key)?.id)
+    .filter(Boolean))];
+  const sponsorKeys = [...new Set((result.sponsors || [])
+    .map((rawSponsor) => normalizeWordPressSponsor(rawSponsor).key)
+    .filter(Boolean))];
+
+  if (powerPressLink) {
+    meta.push(createWordPressPostMeta('enclosure', createPowerPressEnclosureValue(powerPressLink)));
+  }
+
+  if (transcriptValue) {
+    meta.push(createWordPressPostMeta('transcript_link', transcriptValue));
+    meta.push(createWordPressPostMeta('_transcript_link', ACF_FIELD_KEYS.podcastTranscript));
+    meta.push(createWordPressPostMeta('_sed_transcript_source_url', normalizeExportFileUrl(result.transcriptLink || '')));
+  }
+
+  if (sponsorIds.length) {
+    meta.push(createWordPressPostMeta('sponsors', serializePhpStringArray(sponsorIds.map(String))));
+    meta.push(createWordPressPostMeta('_sponsors', ACF_FIELD_KEYS.podcastSponsors));
+    meta.push(createWordPressPostMeta('_sed_sponsor_ids', sponsorIds.join(',')));
+    meta.push(createWordPressPostMeta('_sed_sponsor_keys', JSON.stringify(sponsorKeys)));
+  }
+
+  return meta.join('\n');
+}
+
+function createPowerPressEnclosureValue(url) {
+  return [
+    url,
+    '0',
+    getAttachmentMimeType(url) === 'audio/mpeg' ? 'audio/mpeg' : getAttachmentMimeType(url),
+    'a:6:{s:8:"duration";s:0:"";s:12:"set_duration";s:1:"0";s:8:"set_size";s:1:"0";s:8:"explicit";s:1:"0";s:12:"episode_type";s:4:"full";s:10:"podcast_id";s:0:"";}'
+  ].join('\n');
+}
+
+function serializePhpStringArray(values) {
+  const entries = values
+    .map((value, index) => `i:${index};s:${String(value).length}:"${String(value)}";`)
+    .join('');
+
+  return `a:${values.length}:{${entries}}`;
+}
+
+function createWordPressSponsorItem(sponsor, fallbackDate) {
+  const postDate = formatWordPressDateFromDate(new Date(Date.parse(fallbackDate) || Date.now()));
+  const logoMeta = sponsor.logoAttachmentId
+    ? [
+        createWordPressPostMeta('logo', String(sponsor.logoAttachmentId)),
+        createWordPressPostMeta('_logo', ACF_FIELD_KEYS.sponsorLogo)
+      ].join('\n')
+    : '';
+
+  return [
+    '    <item>',
+    `      <title>${escapeXml(sponsor.name)}</title>`,
+    `      <link>${escapeXml(`https://softwareengineeringdaily.com/?post_type=sponsor&p=${sponsor.id}`)}</link>`,
+    `      <pubDate>${escapeXml(postDate.rss)}</pubDate>`,
+    `      <dc:creator><![CDATA[admin]]></dc:creator>`,
+    `      <guid isPermaLink="false">${escapeXml(`sedscraper-sponsor-${sponsor.id}`)}</guid>`,
+    `      <description></description>`,
+    `      <content:encoded><![CDATA[]]></content:encoded>`,
+    `      <excerpt:encoded><![CDATA[]]></excerpt:encoded>`,
+    `      <wp:post_id>${sponsor.id}</wp:post_id>`,
+    `      <wp:post_date><![CDATA[${postDate.date}]]></wp:post_date>`,
+    `      <wp:post_date_gmt><![CDATA[${postDate.dateGmt}]]></wp:post_date_gmt>`,
+    `      <wp:post_modified><![CDATA[${postDate.date}]]></wp:post_modified>`,
+    `      <wp:post_modified_gmt><![CDATA[${postDate.dateGmt}]]></wp:post_modified_gmt>`,
+    `      <wp:comment_status><![CDATA[closed]]></wp:comment_status>`,
+    `      <wp:ping_status><![CDATA[closed]]></wp:ping_status>`,
+    `      <wp:post_name><![CDATA[${escapeCdata(sponsor.slug)}]]></wp:post_name>`,
+    `      <wp:status><![CDATA[publish]]></wp:status>`,
+    `      <wp:post_parent>0</wp:post_parent>`,
+    `      <wp:menu_order>0</wp:menu_order>`,
+    `      <wp:post_type><![CDATA[sponsor]]></wp:post_type>`,
+    `      <wp:post_password><![CDATA[]]></wp:post_password>`,
+    `      <wp:is_sticky>0</wp:is_sticky>`,
+    createWordPressPostMeta('_wp_page_template', 'default'),
+    logoMeta,
+    sponsor.linkUrl ? createWordPressPostMeta('link_url', sponsor.linkUrl) : '',
+    createWordPressPostMeta('_link_url', ACF_FIELD_KEYS.sponsorLinkUrl),
+    sponsor.description ? createWordPressPostMeta('description', sponsor.description) : '',
+    createWordPressPostMeta('_description', ACF_FIELD_KEYS.sponsorDescription),
+    createWordPressPostMeta('dark_logo_background', '0'),
+    createWordPressPostMeta('_dark_logo_background', ACF_FIELD_KEYS.sponsorDarkLogoBackground),
+    createWordPressPostMeta('sponsor_name', sponsor.name),
+    createWordPressPostMeta('_sponsor_name', ACF_FIELD_KEYS.sponsorName),
+    createWordPressPostMeta('_sed_sponsor_key', sponsor.key),
+    sponsor.image ? createWordPressPostMeta('_sed_sponsor_logo_source_url', sponsor.image) : '',
+    '    </item>'
+  ].filter(Boolean).join('\n');
 }
 
 function extractImagesFromHtml(html, baseUrl = '') {
@@ -1032,11 +1283,29 @@ function convertLooseHtmlToBlock(html, baseUrl = '', attachments = []) {
   const imageBlock = convertImageOnlyHtmlToBlock(html, baseUrl, attachments);
   if (imageBlock) return imageBlock;
 
+  if (isInlineParagraphHtml(html)) {
+    return [
+      '<!-- wp:paragraph -->',
+      `<p>${normalizeImagesInHtml(html, baseUrl, attachments)}</p>`,
+      '<!-- /wp:paragraph -->'
+    ].join('\n');
+  }
+
   return [
     '<!-- wp:html -->',
     normalizeImagesInHtml(html, baseUrl, attachments),
     '<!-- /wp:html -->'
   ].join('\n');
+}
+
+function isInlineParagraphHtml(html) {
+  const value = String(html || '').trim();
+  if (!value) return false;
+  if (/<\/?(?:address|article|aside|blockquote|div|figure|footer|form|h[1-6]|header|hr|li|main|nav|ol|p|pre|section|table|ul)\b/i.test(value)) {
+    return false;
+  }
+
+  return /[^\s]/.test(value);
 }
 
 function convertImageOnlyHtmlToBlock(html, baseUrl = '', attachments = []) {
@@ -1120,13 +1389,16 @@ function createWordPressAttachmentItem(attachment, fallbackDate) {
   if (!fileUrl) return '';
 
   const fileDate = parseDateFromUploadUrl(fileUrl);
-  const postDate = fileDate
+  let postDate = fileDate
     ? formatWordPressDateFromDate(fileDate)
     : formatWordPressDate(attachment.post.publishedDate || attachment.post.date, attachment.post.url, attachment.post.publishedDateGmt);
+  if (!postDate.date) {
+    postDate = formatWordPressDateFromDate(new Date(Date.parse(fallbackDate) || Date.now()));
+  }
   const pubDate = postDate.rss || fallbackDate;
   const attachmentTitle = attachment.title || getExportFilename(fileUrl);
   const attachmentSlug = slugifyTerm(getExportFilename(fileUrl).replace(/\.[a-z0-9]+$/i, '') || attachmentTitle);
-  const postParent = attachment.isFeatured ? attachment.postId : 0;
+  const postParent = attachment.isFeatured || attachment.isSponsorLogo ? attachment.postId : 0;
 
   return [
     '    <item>',
@@ -1155,6 +1427,7 @@ function createWordPressAttachmentItem(attachment, fallbackDate) {
     `      <wp:is_sticky>0</wp:is_sticky>`,
     `      <wp:attachment_url>${escapeXml(fileUrl)}</wp:attachment_url>`,
     createWordPressPostMeta('_wp_attached_file', getWordPressAttachedFilePath(fileUrl)),
+    createWordPressPostMeta('_sed_source_url', fileUrl),
     attachment.alt ? createWordPressPostMeta('_wp_attachment_image_alt', attachment.alt) : '',
     '    </item>'
   ].filter(Boolean).join('\n');

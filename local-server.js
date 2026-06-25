@@ -754,20 +754,23 @@ function findElementIndexByClass(html, className) {
 }
 
 export function extractSponsors(postContentHtml, baseUrl) {
-  const sponsorsSection = extractSectionAfterHeading(postContentHtml, /^sponsors?$/i);
-  if (!sponsorsSection) return [];
+  const sourceHtml = extractSectionAfterHeading(postContentHtml, /^sponsors?$/i, { level: 3 });
+  if (!sourceHtml) return [];
+
+  const cardSponsors = extractSponsorCards(sourceHtml, baseUrl);
+  if (cardSponsors.length) return cardSponsors;
 
   const imagePattern = /<img\b[^>]*>/gi;
-  const imageMatches = [...sponsorsSection.matchAll(imagePattern)];
+  const imageMatches = [...sourceHtml.matchAll(imagePattern)];
   if (!imageMatches.length) return [];
 
   return imageMatches
     .map((match, index) => {
       const imageTag = match[0];
       const nextImage = imageMatches[index + 1];
-      const descriptionHtml = sponsorsSection.slice(
+      const descriptionHtml = sourceHtml.slice(
         match.index + imageTag.length,
-        nextImage ? nextImage.index : sponsorsSection.length
+        nextImage ? nextImage.index : sourceHtml.length
       );
       const imageUrl = resolveUrl(
         extractAttribute(imageTag, 'src')
@@ -792,7 +795,76 @@ export function extractSponsors(postContentHtml, baseUrl) {
     .filter((sponsor) => sponsor.image && (sponsor.descriptionText || sponsor.links.length));
 }
 
-function extractSectionAfterHeading(html, headingTextPattern) {
+function extractSponsorCards(html, baseUrl) {
+  return extractHtmlByClass(html, 'sponsor-card')
+    .map((cardHtml) => {
+      const imageTag = cardHtml.match(/<img\b[^>]*>/i)?.[0] || '';
+      const titleHtml = extractFirstHtmlByClass(cardHtml, 'sponsor-card__title');
+      const descriptionSource = extractFirstHtmlByClass(cardHtml, 'sponsor-card__description')
+        || extractFirstHtmlByClass(cardHtml, 'sponsor-card__content')
+        || cardHtml;
+      const imageUrl = resolveUrl(
+        extractAttribute(imageTag, 'src')
+          || extractAttribute(imageTag, 'data-src')
+          || extractFirstSrcsetUrl(extractAttribute(imageTag, 'srcset'))
+          || extractFirstSrcsetUrl(extractAttribute(imageTag, 'data-srcset')),
+        baseUrl
+      );
+      const descriptionHtml = cleanSponsorDescriptionHtml(descriptionSource, titleHtml, imageTag);
+      const description = sanitizeArticleHtml(descriptionHtml, baseUrl, { allowImages: false });
+      const descriptionText = cleanText(description);
+      const links = uniqueLinks([
+        ...extractLinks(cardHtml.match(/^<a\b[\s\S]*?<\/a>/i)?.[0] || '', baseUrl),
+        ...extractLinks(descriptionHtml, baseUrl)
+      ]);
+      const alt = cleanText(extractAttribute(imageTag, 'alt') || titleHtml || '');
+
+      return {
+        image: imageUrl,
+        alt,
+        name: cleanText(titleHtml || alt),
+        description,
+        descriptionText,
+        links
+      };
+    })
+    .filter((sponsor) => sponsor.image && (sponsor.descriptionText || sponsor.links.length));
+}
+
+function cleanSponsorDescriptionHtml(descriptionHtml, titleHtml = '', imageTag = '') {
+  let html = descriptionHtml || '';
+
+  if (imageTag) {
+    html = html.replace(imageTag, '');
+  }
+
+  if (titleHtml) {
+    html = html.replace(titleHtml, '');
+  }
+
+  return html
+    .replace(/<a\b[^>]*>\s*<\/a>/gi, '')
+    .replace(/<p>\s*(?:&nbsp;|&#160;|\s|<br\s*\/?>)*<\/p>/gi, '')
+    .replace(/<(?:article|div|figure|li)\b[^>]*>/gi, '')
+    .replace(/<\/(?:article|div|figure|li)>/gi, '')
+    .trim();
+}
+
+function uniqueLinks(links) {
+  const seen = new Set();
+  const unique = [];
+
+  links.forEach((link) => {
+    if (!link.url || seen.has(link.url)) return;
+
+    seen.add(link.url);
+    unique.push(link);
+  });
+
+  return unique;
+}
+
+function extractSectionAfterHeading(html, headingTextPattern, options = {}) {
   if (!html) return '';
 
   const headingPattern = /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi;
@@ -800,9 +872,10 @@ function extractSectionAfterHeading(html, headingTextPattern) {
 
   while ((match = headingPattern.exec(html)) !== null) {
     const headingText = cleanText(match[2] || '');
+    const headingLevel = Number(match[1]);
+    if (options.level && headingLevel !== options.level) continue;
     if (!headingTextPattern.test(headingText)) continue;
 
-    const headingLevel = Number(match[1]);
     const start = headingPattern.lastIndex;
     const rest = html.slice(start);
     const nextHeading = findNextHeadingAtOrAboveLevel(rest, headingLevel);
