@@ -7,6 +7,7 @@ const submitButton = document.querySelector('#submit-button');
 const clearButton = document.querySelector('#clear-button');
 const csvButton = document.querySelector('#csv-button');
 const wordpressExportButton = document.querySelector('#wordpress-export-button');
+const redirectionsExportButton = document.querySelector('#redirections-export-button');
 const postTypeFilter = document.querySelector('#post-type-filter');
 const sponsorFilter = document.querySelector('#sponsor-filter');
 const sponsorView = document.querySelector('#sponsor-view');
@@ -48,6 +49,7 @@ form.addEventListener('submit', async (event) => {
     renderResults(getVisibleResults());
     csvButton.disabled = lastResults.length === 0;
     wordpressExportButton.disabled = lastResults.length === 0;
+    redirectionsExportButton.disabled = lastResults.length === 0;
     setStatus('Done.');
   } catch (error) {
     setStatus(error.message, true);
@@ -65,6 +67,7 @@ clearButton.addEventListener('click', () => {
   updateSponsorViewAvailability();
   csvButton.disabled = true;
   wordpressExportButton.disabled = true;
+  redirectionsExportButton.disabled = true;
   setStatus('One line = one link. Limit: 100 URLs.');
   renderEmpty();
 });
@@ -111,6 +114,19 @@ wordpressExportButton.addEventListener('click', () => {
   URL.revokeObjectURL(url);
 });
 
+redirectionsExportButton.addEventListener('click', () => {
+  if (!lastResults.length) return;
+
+  const rows = createRedirectionCsvRows(getFilteredResults());
+  const blob = new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `redirections-sedscraper-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+});
+
 export function createCsvRows(results) {
   const rows = [['url', 'status', 'post_title', 'date', 'category', 'tags', 'scraped_categories', 'post_content', 'powerpress_link', 'transcript_link', 'sponsor_images', 'sponsor_descriptions', 'sponsor_links']];
 
@@ -138,6 +154,32 @@ export function createCsvRows(results) {
       sponsors.map((sponsor) => formatSponsorLinks(sponsor.links || [])).filter(Boolean).join(' | ')
     ]);
   });
+
+  return rows;
+}
+
+export function createRedirectionCsvRows(results) {
+  const rows = [['source', 'target', 'regex', 'code', 'type', 'hits', 'title', 'status']];
+
+  results
+    .filter((result) => result.ok)
+    .forEach((result) => {
+      const source = getRedirectionSourcePath(result.url);
+      const target = getRedirectionTargetPath(result);
+
+      if (!source || !target) return;
+
+      rows.push([
+        source,
+        target,
+        '0',
+        '301',
+        'url',
+        '0',
+        '',
+        'active'
+      ]);
+    });
 
   return rows;
 }
@@ -407,6 +449,33 @@ function getPostSlug(url) {
   } catch {
     return '';
   }
+}
+
+function getRedirectionSourcePath(url) {
+  try {
+    const parsedUrl = new URL(url);
+    const pathname = parsedUrl.pathname.endsWith('/')
+      ? parsedUrl.pathname
+      : `${parsedUrl.pathname}/`;
+
+    return pathname || '';
+  } catch {
+    return '';
+  }
+}
+
+function getRedirectionTargetPath(result) {
+  const slug = getPostSlug(result.url);
+  if (!slug) return '';
+
+  const typePath = result.category === 'Podcast'
+    ? 'podcasts'
+    : result.category === 'Article'
+      ? 'articles'
+      : '';
+  if (!typePath) return '';
+
+  return `/${typePath}/${slug}/`;
 }
 
 function getFilteredResults() {
