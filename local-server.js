@@ -717,9 +717,10 @@ export function extractArticleContent(postContentHtml, baseUrl = '') {
   if (!postContentHtml) return '';
 
   const authorHeaderIndex = findElementIndexByClass(postContentHtml, 'author-header');
-  const contentHtml = authorHeaderIndex >= 0
+  const contentBeforeAuthor = authorHeaderIndex >= 0
     ? postContentHtml.slice(0, authorHeaderIndex)
     : postContentHtml;
+  const contentHtml = removeSectionAfterHeading(contentBeforeAuthor, /^sponsors?$/i, { level: 3 });
 
   return sanitizeArticleHtml(contentHtml, baseUrl);
 }
@@ -883,6 +884,31 @@ function extractSectionAfterHeading(html, headingTextPattern, options = {}) {
   }
 
   return '';
+}
+
+function removeSectionAfterHeading(html, headingTextPattern, options = {}) {
+  if (!html) return '';
+
+  const headingPattern = /<h([1-6])\b[^>]*>[\s\S]*?<\/h\1>/gi;
+  let match;
+
+  while ((match = headingPattern.exec(html)) !== null) {
+    const headingLevel = Number(match[1]);
+    if (options.level && headingLevel !== options.level) continue;
+
+    const headingText = cleanText(match[0] || '');
+    if (!headingTextPattern.test(headingText)) continue;
+
+    const rest = html.slice(headingPattern.lastIndex);
+    const nextHeading = findNextHeadingAtOrAboveLevel(rest, headingLevel);
+    const endIndex = nextHeading >= 0
+      ? headingPattern.lastIndex + nextHeading
+      : html.length;
+
+    return `${html.slice(0, match.index)}${html.slice(endIndex)}`;
+  }
+
+  return html;
 }
 
 function findNextHeadingAtOrAboveLevel(html, level) {

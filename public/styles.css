@@ -101,6 +101,34 @@ label {
   font-weight: 800;
 }
 
+.file-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.file-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 0;
+  padding: 10px 12px;
+  border: 2px solid var(--line);
+  background: #fffdf7;
+}
+
+.file-control input {
+  max-width: 270px;
+}
+
+.file-status {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
 textarea {
   width: 100%;
   min-height: 260px;
@@ -145,8 +173,49 @@ textarea:focus {
 }
 
 .export-actions {
+  align-items: stretch;
   padding-top: 12px;
   border-top: 2px solid rgba(43, 38, 32, 0.18);
+}
+
+.export-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.export-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.batch-links {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.batch-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 2px solid var(--line);
+  color: var(--ink);
+  background: #fffdf7;
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.batch-link:hover {
+  color: #fff;
+  background: var(--accent);
 }
 
 button {
@@ -193,6 +262,10 @@ button:disabled {
   gap: 8px;
   margin: 0;
   font-weight: 800;
+}
+
+.select-control.compact {
+  min-width: 150px;
 }
 
 .select-control span {

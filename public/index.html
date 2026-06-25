@@ -15,6 +15,13 @@
 
         <form id="scrape-form" class="scrape-form panel">
           <label for="links">Links to scrape</label>
+          <div class="file-row">
+            <label class="file-control" for="links-csv">
+              <span>Upload CSV with links</span>
+              <input id="links-csv" name="links-csv" type="file" accept=".csv,text/csv">
+            </label>
+            <span id="csv-file-status" class="file-status">No CSV selected</span>
+          </div>
           <textarea id="links" name="links" spellcheck="false" placeholder="https://example.com/article-1&#10;https://example.com/article-2"></textarea>
           <div class="actions">
             <div class="action-group scrape-actions">
@@ -50,11 +57,27 @@
               </label>
             </div>
             <div class="action-group export-actions">
-              <button type="button" id="csv-button" class="ghost" disabled>CSV</button>
-              <button type="button" id="wordpress-export-button" class="ghost" disabled>Export for WordPress</button>
-              <button type="button" id="redirections-export-button" class="ghost" disabled>Export redirections (CSV)</button>
+              <div class="export-row">
+                <span class="export-label">Export</span>
+                <button type="button" id="csv-button" class="ghost" disabled>CSV</button>
+                <button type="button" id="wordpress-export-button" class="ghost" disabled>Export for WordPress</button>
+                <button type="button" id="redirections-export-button" class="ghost" disabled>Export redirections (CSV)</button>
+              </div>
+              <div class="export-row">
+                <label class="select-control compact" for="export-batch-size">
+                  <span>Batch</span>
+                  <select id="export-batch-size" class="export-batch-size" name="export-batch-size">
+                    <option value="250">250 posts</option>
+                    <option value="500">500 posts</option>
+                    <option value="100">100 posts</option>
+                  </select>
+                </label>
+                <button type="button" id="wordpress-batch-export-button" class="ghost" disabled>Export WordPress batches</button>
+                <button type="button" id="manifest-export-button" class="ghost" disabled>Export manifest</button>
+              </div>
             </div>
           </div>
+          <div id="batch-links" class="batch-links" aria-live="polite"></div>
           <p id="status" class="status" role="status" aria-live="polite">One line = one link. Limit: 100 URLs.</p>
         </form>
       </section>

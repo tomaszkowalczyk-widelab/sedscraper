@@ -1,5 +1,7 @@
 const form = document.querySelector('#scrape-form');
 const textarea = document.querySelector('#links');
+const linksCsvInput = document.querySelector('#links-csv');
+const csvFileStatus = document.querySelector('#csv-file-status');
 const statusEl = document.querySelector('#status');
 const resultsList = document.querySelector('#results-list');
 const summaryEl = document.querySelector('#summary');
@@ -7,12 +9,18 @@ const submitButton = document.querySelector('#submit-button');
 const clearButton = document.querySelector('#clear-button');
 const csvButton = document.querySelector('#csv-button');
 const wordpressExportButton = document.querySelector('#wordpress-export-button');
+const wordpressBatchExportButton = document.querySelector('#wordpress-batch-export-button');
+const manifestExportButton = document.querySelector('#manifest-export-button');
 const redirectionsExportButton = document.querySelector('#redirections-export-button');
+const exportBatchSize = document.querySelector('#export-batch-size');
+const batchLinks = document.querySelector('#batch-links');
 const postTypeFilter = document.querySelector('#post-type-filter');
 const sponsorFilter = document.querySelector('#sponsor-filter');
 const sponsorView = document.querySelector('#sponsor-view');
 
 let lastResults = [];
+let batchLinkUrls = [];
+const SCRAPE_BATCH_SIZE = 100;
 
 renderEmpty();
 updateSponsorViewAvailability();
@@ -20,10 +28,7 @@ updateSponsorViewAvailability();
 form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
-  const links = textarea.value
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const links = getTextareaLinks();
 
   if (!links.length) {
     setStatus('Paste at least one link.', true);
@@ -31,25 +36,13 @@ form.addEventListener('submit', async (event) => {
   }
 
   setLoading(true);
-  setStatus(`Fetching ${links.length} ${links.length === 1 ? 'URL' : 'URLs'}...`);
+  setStatus(`Fetching ${links.length} ${links.length === 1 ? 'URL' : 'URLs'} in batches of ${SCRAPE_BATCH_SIZE}...`);
 
   try {
-    const response = await fetch('/api/scrape', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ links })
-    });
-    const payload = await response.json();
-
-    if (!response.ok) {
-      throw new Error(payload.error || 'Scraping failed.');
-    }
-
-    lastResults = payload.results || [];
+    lastResults = await scrapeLinksInBatches(links);
     renderResults(getVisibleResults());
-    csvButton.disabled = lastResults.length === 0;
-    wordpressExportButton.disabled = lastResults.length === 0;
-    redirectionsExportButton.disabled = lastResults.length === 0;
+    updateExportButtons();
+    renderBatchLinks();
     setStatus('Done.');
   } catch (error) {
     setStatus(error.message, true);
@@ -60,29 +53,56 @@ form.addEventListener('submit', async (event) => {
 
 clearButton.addEventListener('click', () => {
   textarea.value = '';
+  linksCsvInput.value = '';
+  csvFileStatus.textContent = 'No CSV selected';
   lastResults = [];
   postTypeFilter.value = 'all';
   sponsorFilter.value = 'all';
   sponsorView.value = 'posts';
   updateSponsorViewAvailability();
-  csvButton.disabled = true;
-  wordpressExportButton.disabled = true;
-  redirectionsExportButton.disabled = true;
+  updateExportButtons();
+  clearBatchLinks();
   setStatus('One line = one link. Limit: 100 URLs.');
   renderEmpty();
 });
 
+linksCsvInput.addEventListener('change', async () => {
+  const file = linksCsvInput.files?.[0];
+  if (!file) {
+    csvFileStatus.textContent = 'No CSV selected';
+    return;
+  }
+
+  try {
+    const text = await file.text();
+    const links = extractLinksFromCsv(text);
+    textarea.value = links.join('\n');
+    csvFileStatus.textContent = `${links.length} links loaded from ${file.name}`;
+    setStatus(`${links.length} links loaded from CSV.`);
+  } catch (error) {
+    csvFileStatus.textContent = 'CSV could not be read';
+    setStatus(error.message || 'CSV could not be read.', true);
+  }
+});
+
 postTypeFilter.addEventListener('change', () => {
   renderResults(getVisibleResults());
+  renderBatchLinks();
 });
 
 sponsorFilter.addEventListener('change', () => {
   updateSponsorViewAvailability();
   renderResults(getVisibleResults());
+  renderBatchLinks();
 });
 
 sponsorView.addEventListener('change', () => {
   renderResults(getVisibleResults());
+  renderBatchLinks();
+});
+
+exportBatchSize.addEventListener('change', () => {
+  renderBatchLinks();
 });
 
 csvButton.addEventListener('click', () => {
@@ -104,28 +124,230 @@ csvButton.addEventListener('click', () => {
 wordpressExportButton.addEventListener('click', () => {
   if (!lastResults.length) return;
 
-  const wxr = createWordPressWxr(getFilteredResults());
-  const blob = new Blob([wxr], { type: 'application/rss+xml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `wordpress-import-${new Date().toISOString().slice(0, 10)}.xml`;
-  link.click();
-  URL.revokeObjectURL(url);
+  downloadTextFile(
+    createWordPressWxr(getFilteredResults(), { batchName: 'full' }),
+    `wordpress-import-${new Date().toISOString().slice(0, 10)}.xml`,
+    'application/rss+xml;charset=utf-8'
+  );
+});
+
+wordpressBatchExportButton.addEventListener('click', () => {
+  if (!lastResults.length) return;
+
+  renderBatchLinks();
+  setStatus('WordPress batch export links are ready.');
+});
+
+manifestExportButton.addEventListener('click', () => {
+  if (!lastResults.length) return;
+
+  downloadTextFile(
+    JSON.stringify(createImportManifest(getFilteredResults()), null, 2),
+    `sedscraper-import-manifest-${new Date().toISOString().slice(0, 10)}.json`,
+    'application/json;charset=utf-8'
+  );
 });
 
 redirectionsExportButton.addEventListener('click', () => {
   if (!lastResults.length) return;
 
   const rows = createRedirectionCsvRows(getFilteredResults());
-  const blob = new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8' });
+  downloadTextFile(
+    toCsv(rows),
+    `redirections-sedscraper-${new Date().toISOString().slice(0, 10)}.csv`,
+    'text/csv;charset=utf-8'
+  );
+});
+
+function getTextareaLinks() {
+  return [...new Set(textarea.value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean))];
+}
+
+async function scrapeLinksInBatches(links) {
+  const batches = chunkArray(links, SCRAPE_BATCH_SIZE);
+  const results = [];
+
+  for (const [index, batch] of batches.entries()) {
+    setStatus(`Fetching batch ${index + 1}/${batches.length} (${batch.length} URLs)...`);
+    const batchResults = await fetchScrapeBatch(batch);
+    results.push(...batchResults);
+    lastResults = results;
+    renderResults(getVisibleResults());
+  }
+
+  return results;
+}
+
+async function fetchScrapeBatch(links) {
+  const response = await fetch('/api/scrape', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ links })
+  });
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error || 'Scraping failed.');
+  }
+
+  return payload.results || [];
+}
+
+function updateExportButtons() {
+  const disabled = lastResults.length === 0;
+  csvButton.disabled = disabled;
+  wordpressExportButton.disabled = disabled;
+  wordpressBatchExportButton.disabled = disabled;
+  manifestExportButton.disabled = disabled;
+  redirectionsExportButton.disabled = disabled;
+}
+
+function renderBatchLinks() {
+  clearBatchLinks();
+
+  const date = new Date().toISOString().slice(0, 10);
+  const batchFiles = createWordPressBatchFiles(getFilteredResults(), getExportBatchSize(), date);
+  if (!batchFiles.length) return;
+
+  batchFiles.forEach((batchFile) => {
+    const blob = new Blob([batchFile.content], { type: 'application/rss+xml;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+
+    batchLinkUrls.push(url);
+    link.className = 'batch-link';
+    link.href = url;
+    link.download = batchFile.filename;
+    link.textContent = `${batchFile.filename} (${batchFile.count} posts)`;
+    batchLinks.append(link);
+  });
+}
+
+function clearBatchLinks() {
+  batchLinkUrls.forEach((url) => URL.revokeObjectURL(url));
+  batchLinkUrls = [];
+  batchLinks.replaceChildren();
+}
+
+function extractLinksFromCsv(csvText) {
+  const rows = parseCsv(csvText);
+  if (!rows.length) return [];
+
+  const header = rows[0].map((cell) => cell.trim().toLowerCase());
+  const headerIndex = header.findIndex((cell) => ['url', 'link', 'source'].includes(cell));
+  const hasHeader = headerIndex >= 0;
+  const urlIndex = hasHeader ? headerIndex : 0;
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  const links = dataRows
+    .map((row) => row[urlIndex] || '')
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map((value) => {
+      try {
+        return new URL(value).toString();
+      } catch {
+        return '';
+      }
+    })
+    .filter(Boolean);
+
+  if (!links.length) {
+    throw new Error('No valid links found in CSV.');
+  }
+
+  return [...new Set(links)];
+}
+
+function parseCsv(csvText) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < csvText.length; index += 1) {
+    const char = csvText[index];
+    const nextChar = csvText[index + 1];
+
+    if (char === '"' && inQuotes && nextChar === '"') {
+      cell += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      row.push(cell);
+      cell = '';
+      continue;
+    }
+
+    if ((char === '\n' || char === '\r') && !inQuotes) {
+      if (char === '\r' && nextChar === '\n') index += 1;
+      row.push(cell);
+      if (row.some((value) => value.trim())) rows.push(row);
+      row = [];
+      cell = '';
+      continue;
+    }
+
+    cell += char;
+  }
+
+  row.push(cell);
+  if (row.some((value) => value.trim())) rows.push(row);
+  return rows;
+}
+
+function downloadTextFile(content, filename, type) {
+  const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `redirections-sedscraper-${new Date().toISOString().slice(0, 10)}.csv`;
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
-});
+}
+
+function chunkArray(items, size) {
+  const chunks = [];
+
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+
+  return chunks;
+}
+
+function getExportBatchSize() {
+  const size = Number(exportBatchSize.value);
+  return Number.isFinite(size) && size > 0 ? size : 250;
+}
+
+export function createWordPressBatchFiles(results, batchSize, date = new Date().toISOString().slice(0, 10)) {
+  const posts = results.filter((result) => result.ok);
+  const safeBatchSize = Number.isFinite(Number(batchSize)) && Number(batchSize) > 0
+    ? Number(batchSize)
+    : 250;
+  const batches = chunkArray(posts, safeBatchSize);
+
+  return batches.map((batch, index) => {
+    const batchName = `part-${String(index + 1).padStart(3, '0')}`;
+
+    return {
+      batchName,
+      count: batch.length,
+      filename: `wordpress-import-${batchName}-${date}.xml`,
+      content: createWordPressWxr(batch, { batchName, batchIndex: index + 1, batchTotal: batches.length })
+    };
+  });
+}
 
 export function createCsvRows(results) {
   const rows = [['url', 'status', 'post_title', 'date', 'category', 'tags', 'scraped_categories', 'post_content', 'powerpress_link', 'transcript_link', 'sponsor_images', 'sponsor_descriptions', 'sponsor_links']];
@@ -184,7 +406,43 @@ export function createRedirectionCsvRows(results) {
   return rows;
 }
 
-export function createWordPressWxr(results) {
+export function createImportManifest(results) {
+  return {
+    generatedAt: new Date().toISOString(),
+    total: results.length,
+    posts: results
+      .filter((result) => result.ok)
+      .map((result) => ({
+        sourceUrl: result.url || '',
+        sourcePath: getRedirectionSourcePath(result.url),
+        targetPath: getRedirectionTargetPath(result),
+        sourceSlug: getPostSlug(result.url),
+        postType: result.category === 'Podcast' ? 'podcast' : 'post',
+        sourceType: result.category || '',
+        title: result.title || '',
+        publishedDate: result.publishedDate || result.date || '',
+        publishedDateGmt: result.publishedDateGmt || '',
+        featuredImage: normalizeExportImageUrl(result.featuredImage?.src || ''),
+        transcriptUrl: normalizeExportFileUrl(result.transcriptLink || ''),
+        powerPressLink: normalizeExportFileUrl(result.powerPressLink || ''),
+        tags: (result.tags || []).map((term) => normalizeWordPressExportTerm(term)),
+        categories: (result.categories || []).map((term) => normalizeWordPressExportTerm(term)),
+        sponsors: (result.sponsors || []).map((sponsor) => {
+          const normalizedSponsor = normalizeWordPressSponsor(sponsor);
+
+          return {
+            key: normalizedSponsor.key,
+            name: normalizedSponsor.name,
+            image: normalizedSponsor.image,
+            linkUrl: normalizedSponsor.linkUrl,
+            descriptionText: normalizedSponsor.descriptionText
+          };
+        })
+      }))
+  };
+}
+
+export function createWordPressWxr(results, options = {}) {
   const now = new Date().toUTCString();
   const posts = results.filter((result) => result.ok);
   const declaredTags = createWordPressTagDeclarations(posts);
@@ -211,6 +469,7 @@ export function createWordPressWxr(results) {
       const podcastMeta = postType === 'podcast'
         ? createWordPressPodcastMeta(result, sponsorPlan, postAttachments)
         : '';
+      const stablePostMeta = createWordPressStablePostMeta(result, postType, options.batchName || 'full');
 
       return [
         '    <item>',
@@ -239,6 +498,7 @@ export function createWordPressWxr(results) {
         `      <wp:post_password><![CDATA[]]></wp:post_password>`,
         `      <wp:is_sticky>0</wp:is_sticky>`,
         thumbnailMeta,
+        stablePostMeta,
         podcastMeta,
         '    </item>'
       ].filter(Boolean).join('\n');
@@ -1148,6 +1408,17 @@ function getPostExportFiles(result) {
   }
 
   return files;
+}
+
+function createWordPressStablePostMeta(result, postType, batchName) {
+  return [
+    createWordPressPostMeta('_sed_source_url', result.url || ''),
+    createWordPressPostMeta('_sed_source_path', getRedirectionSourcePath(result.url)),
+    createWordPressPostMeta('_sed_source_slug', getPostSlug(result.url)),
+    createWordPressPostMeta('_sed_source_type', result.category || ''),
+    createWordPressPostMeta('_sed_target_post_type', postType),
+    createWordPressPostMeta('_sed_import_batch', batchName || 'full')
+  ].join('\n');
 }
 
 function createWordPressPodcastMeta(result, sponsorPlan, postAttachments) {
